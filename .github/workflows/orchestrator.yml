@@ -1,0 +1,82 @@
+name: Orchestrator
+
+on:
+  schedule:
+    - cron: '*/30 * * * *'  # Every 30 minutes
+  workflow_dispatch:
+
+jobs:
+  dispatch-tasks:
+    runs-on: ubuntu-latest
+    permissions:
+      issues: write
+    steps:
+      - name: Process ready tasks
+        env:
+          GH_TOKEN: ${{ secrets.GH_DISPATCH_TOKEN }}
+          ORCHESTRATOR_REPO: ${{ github.repository }}
+        run: |
+          echo "Scanning for ready tasks..."
+
+          issues=$(gh issue list \
+            --repo "$ORCHESTRATOR_REPO" \
+            --label ready \
+            --state open \
+            --json number,title,body,labels \
+            --limit 5)
+
+          count=$(echo "$issues" | jq length)
+          echo "Found $count ready task(s)"
+
+          if [ "$count" -eq 0 ]; then
+            echo "Nothing to do."
+            exit 0
+          fi
+
+          echo "$issues" | jq -c '.[]' | while read -r issue; do
+            number=$(echo "$issue" | jq -r '.number')
+            title=$(echo "$issue" | jq -r '.title')
+            body=$(echo "$issue" | jq -r '.body // ""')
+
+            # Determine target repo from repo:* label
+            target_repo=$(echo "$issue" | jq -r '.labels[].name' | grep '^repo:' | head -1 | sed 's/repo://')
+
+            if [ -z "$target_repo" ]; then
+              echo "Issue #$number has no repo: label — skipping"
+              continue
+            fi
+
+            echo "Dispatching issue #$number ('$title') → $target_repo"
+
+            # Build the prompt sent to claude-code-action
+            prompt="You are implementing a task from the RetroStoreManager project Kanban.
+
+Issue #${number} in sbranham314/orchestrator-mystore: ${title}
+
+${body}
+
+Instructions:
+1. Read CLAUDE.md and AGENTS.md for coding standards before making any changes.
+2. Create a feature branch named feature/issue-${number}-$(echo '$title' | tr '[:upper:]' '[:lower:]' | tr ' ' '-' | cut -c1-40) off the development branch.
+3. Implement the task following all project conventions.
+4. Run dotnet build and dotnet test to verify your changes.
+5. Open a pull request targeting the development branch.
+6. PR title should be the issue title. PR body should describe the changes and reference: Closes sbranham314/orchestrator-mystore#${number}"
+
+            # Mark issue as in-progress
+            gh issue edit "$number" \
+              --repo "$ORCHESTRATOR_REPO" \
+              --remove-label ready \
+              --add-label in-progress
+
+            # Fire repository_dispatch to target repo
+            gh api "repos/sbranham314/${target_repo}/dispatches" \
+              --method POST \
+              --field event_type=claude-agent \
+              --field "client_payload[prompt]=${prompt}" \
+              --field "client_payload[branch]=development" \
+              --field "client_payload[issue_number]=${number}" \
+              --field "client_payload[issue_repo]=${ORCHESTRATOR_REPO}"
+
+            echo "✓ Dispatched issue #$number to $target_repo"
+          done
