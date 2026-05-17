@@ -15,7 +15,9 @@ jobs:
         env:
           GH_TOKEN: ${{ secrets.GH_DISPATCH_TOKEN }}
           ORCHESTRATOR_REPO: ${{ github.repository }}
+        shell: bash
         run: |
+          set -e
           echo "Scanning for ready tasks..."
 
           issues=$(gh issue list \
@@ -38,38 +40,26 @@ jobs:
             title=$(echo "$issue" | jq -r '.title')
             body=$(echo "$issue" | jq -r '.body // ""')
 
-            # Determine target repo from repo:* label
             target_repo=$(echo "$issue" | jq -r '.labels[].name' | grep '^repo:' | head -1 | sed 's/repo://')
 
             if [ -z "$target_repo" ]; then
-              echo "Issue #$number has no repo: label — skipping"
+              echo "Issue #$number has no repo: label - skipping"
               continue
             fi
 
-            echo "Dispatching issue #$number ('$title') → $target_repo"
+            echo "Dispatching issue #$number to $target_repo"
 
-            # Build the prompt sent to claude-code-action
-            prompt="You are implementing a task from the RetroStoreManager project Kanban.
-
-Issue #${number} in sbranham314/orchestrator-mystore: ${title}
+            prompt="Task from RetroStoreManager Kanban. Issue #${number}: ${title}
 
 ${body}
 
-Instructions:
-1. Read CLAUDE.md and AGENTS.md for coding standards before making any changes.
-2. Create a feature branch named feature/issue-${number}-$(echo '$title' | tr '[:upper:]' '[:lower:]' | tr ' ' '-' | cut -c1-40) off the development branch.
-3. Implement the task following all project conventions.
-4. Run dotnet build and dotnet test to verify your changes.
-5. Open a pull request targeting the development branch.
-6. PR title should be the issue title. PR body should describe the changes and reference: Closes sbranham314/orchestrator-mystore#${number}"
+Instructions: Read CLAUDE.md and AGENTS.md first. Create a feature branch feature/issue-${number} off development. Implement the task. Run dotnet build and dotnet test. Open a PR targeting development referencing Closes sbranham314/orchestrator-mystore#${number}"
 
-            # Mark issue as in-progress
             gh issue edit "$number" \
               --repo "$ORCHESTRATOR_REPO" \
               --remove-label ready \
               --add-label in-progress
 
-            # Fire repository_dispatch to target repo
             gh api "repos/sbranham314/${target_repo}/dispatches" \
               --method POST \
               --field event_type=claude-agent \
@@ -78,5 +68,5 @@ Instructions:
               --field "client_payload[issue_number]=${number}" \
               --field "client_payload[issue_repo]=${ORCHESTRATOR_REPO}"
 
-            echo "✓ Dispatched issue #$number to $target_repo"
+            echo "Dispatched issue #$number to $target_repo"
           done
