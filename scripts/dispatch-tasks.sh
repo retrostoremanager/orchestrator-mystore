@@ -59,10 +59,12 @@ PROMPT
     --remove-label ready \
     --add-label in-progress
 
-  GH_TOKEN="$DISPATCH_TOKEN" gh workflow run "Claude Code Agent" \
-    --repo "${owner}/${target_repo}" \
-    --field "prompt=${prompt}" \
-    --field "branch=development"
+  GH_TOKEN="$DISPATCH_TOKEN" gh api \
+    "repos/${owner}/${target_repo}/actions/workflows/claude-code.yml/dispatches" \
+    --method POST \
+    --field ref=main \
+    -f "inputs[prompt]=${prompt}" \
+    -f "inputs[branch]=development"
 
   echo "Dispatched issue #$number to $target_repo"
 done
