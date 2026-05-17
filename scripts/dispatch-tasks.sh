@@ -2,7 +2,8 @@
 set -euo pipefail
 
 ORCHESTRATOR_REPO="${ORCHESTRATOR_REPO:?}"
-GH_TOKEN="${GH_TOKEN:?}"
+GH_TOKEN="${GH_TOKEN:?}"          # built-in token for this repo (issues)
+DISPATCH_TOKEN="${DISPATCH_TOKEN:?}" # PAT for cross-repo dispatch
 
 echo "Scanning for ready tasks in $ORCHESTRATOR_REPO..."
 
@@ -58,7 +59,7 @@ PROMPT
     --remove-label ready \
     --add-label in-progress
 
-  gh api "repos/${owner}/${target_repo}/dispatches" \
+  GH_TOKEN="$DISPATCH_TOKEN" gh api "repos/${owner}/${target_repo}/dispatches" \
     --method POST \
     --field event_type=claude-agent \
     --field "client_payload[prompt]=${prompt}" \
