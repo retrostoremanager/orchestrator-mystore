@@ -62,12 +62,12 @@ Make acceptance criteria detailed enough that a developer can implement the feat
 - After creating issues, print "Done. Created N issues." so we know you finished
 PROMPT
 
-echo "Dispatching backlog generation agent to fn-mystore..."
+echo "Dispatching backlog generation agent..."
 
 jq -n --arg prompt "$PROMPT" \
-  '{"ref":"main","inputs":{"prompt":$prompt,"branch":"development"}}' | \
+  '{"ref":"main","inputs":{"prompt":$prompt}}' | \
 GH_TOKEN="$DISPATCH_TOKEN" gh api \
-  "repos/${owner}/fn-mystore/actions/workflows/claude-code.yml/dispatches" \
+  "repos/${owner}/orchestrator-mystore/actions/workflows/generate-backlog.yml/dispatches" \
   --method POST --input -
 
 echo "Backlog generation dispatched."
