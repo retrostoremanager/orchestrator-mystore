@@ -9,6 +9,9 @@ jobs:
   dispatch-tasks:
     if: github.event_name != 'issues' || github.event.label.name == 'ready'
     runs-on: ubuntu-latest
+    concurrency:
+      group: orchestrator
+      cancel-in-progress: false
     permissions:
       contents: read
       issues: write
