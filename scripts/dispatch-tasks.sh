@@ -154,7 +154,7 @@ open_count=$(gh issue list \
   --repo "$ORCHESTRATOR_REPO" \
   --state open \
   --json number,labels \
-  --jq '[.[] | select(.labels[].name == "ready" or .labels[].name == "in-progress")] | length' \
+  --jq '[.[] | select(.labels | map(.name) | any(. == "ready" or . == "in-progress"))] | length' \
   2>/dev/null || echo "99")
 
 echo "Open issues (ready + in-progress): $open_count"
