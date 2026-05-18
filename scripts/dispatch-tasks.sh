@@ -118,7 +118,26 @@ PROMPT
 done
 
 # ════════════════════════════════════════════════════════════════════════════
-# STEP 2 — Dispatch new ready tasks
+# STEP 2 — Replenish backlog if running low
+# ════════════════════════════════════════════════════════════════════════════
+BACKLOG_THRESHOLD=3
+
+open_count=$(gh issue list \
+  --repo "$ORCHESTRATOR_REPO" \
+  --state open \
+  --json number,labels \
+  --jq '[.[] | select(.labels[].name == "ready" or .labels[].name == "in-progress")] | length' \
+  2>/dev/null || echo "99")
+
+echo "Open issues (ready + in-progress): $open_count"
+
+if [ "${open_count:-99}" -lt "$BACKLOG_THRESHOLD" ]; then
+  echo "Backlog below threshold ($BACKLOG_THRESHOLD) — triggering backlog generation"
+  bash "$(dirname "$0")/generate-backlog.sh" || echo "Backlog generation dispatch failed (non-fatal)"
+fi
+
+# ════════════════════════════════════════════════════════════════════════════
+# STEP 3 — Dispatch new ready tasks
 # ════════════════════════════════════════════════════════════════════════════
 echo "Scanning for ready tasks in $ORCHESTRATOR_REPO..."
 
@@ -151,6 +170,12 @@ echo "$issues" | jq -c '.[]' | while read -r issue; do
 
   echo "Dispatching issue #$number ('$title') to $target_repo..."
 
+  if [ "$target_repo" = "fn-mystore" ]; then
+    build_cmd="dotnet build MyStore.sln && dotnet test MyStore.Tests/MyStore.Tests.csproj"
+  else
+    build_cmd="npm install && npm run build && npm test -- --run"
+  fi
+
   read -r -d '' prompt << PROMPT || true
 Task from RetroStoreManager Kanban.
 
@@ -159,10 +184,10 @@ Issue #${number} in ${ORCHESTRATOR_REPO}: ${title}
 ${body}
 
 Instructions:
-1. Read CLAUDE.md and AGENTS.md for coding standards before making any changes.
+1. Read CLAUDE.md for coding standards and file map before making any changes.
 2. Create a feature branch feature/issue-${number} off the development branch.
 3. Implement the task following all project conventions.
-4. Run dotnet build MyStore.sln and dotnet test MyStore.Tests/MyStore.Tests.csproj.
+4. Run: ${build_cmd}
 5. Open a pull request targeting the development branch.
 6. PR title: ${title}. PR body must include: Closes ${ORCHESTRATOR_REPO}#${number}
 PROMPT
