@@ -32,8 +32,8 @@ ${EXISTING_ISSUES}
 
 ## How to create each issue
 
-Use this exact gh command for each issue:
-  GH_TOKEN="\$GH_DISPATCH_TOKEN" gh issue create \
+Use this exact gh command for each issue (no token override needed — GITHUB_TOKEN has issues:write in this workflow):
+  gh issue create \
     --repo ${ORCHESTRATOR_REPO} \
     --title "[title]" \
     --body "[body]" \
