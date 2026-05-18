@@ -146,7 +146,10 @@ issues=$(gh issue list \
   --label ready \
   --state open \
   --json number,title,body,labels \
-  --limit 5)
+  --limit 10)
+
+# Sort: priority:high issues first, then regular
+issues=$(echo "$issues" | jq 'sort_by(if (.labels | map(.name) | any(. == "priority:high")) then 0 else 1 end)')
 
 count=$(echo "$issues" | jq length)
 echo "Found $count ready task(s)"
@@ -156,10 +159,19 @@ if [ "$count" -eq 0 ]; then
   exit 0
 fi
 
+# Dispatch at most 5 at once
+dispatched=0
+
 echo "$issues" | jq -c '.[]' | while read -r issue; do
+  if [ "$dispatched" -ge 5 ]; then
+    break
+  fi
+
   number=$(echo "$issue" | jq -r '.number')
   title=$(echo "$issue" | jq -r '.title')
   body=$(echo "$issue" | jq -r '.body // ""')
+  is_bug=$(echo "$issue" | jq -r '[.labels[].name] | any(. == "bug")')
+  is_priority=$(echo "$issue" | jq -r '[.labels[].name] | any(. == "priority:high")')
 
   target_repo=$(echo "$issue" | jq -r '.labels[].name' | grep '^repo:' | head -1 | sed 's/repo://')
 
@@ -168,7 +180,11 @@ echo "$issues" | jq -c '.[]' | while read -r issue; do
     continue
   fi
 
-  echo "Dispatching issue #$number ('$title') to $target_repo..."
+  priority_tag=""
+  if [ "$is_priority" = "true" ]; then
+    priority_tag=" [PRIORITY]"
+  fi
+  echo "Dispatching issue #$number ('$title')${priority_tag} to $target_repo..."
 
   if [ "$target_repo" = "fn-mystore" ]; then
     build_cmd="dotnet build MyStore.sln && dotnet test MyStore.Tests/MyStore.Tests.csproj"
@@ -176,12 +192,22 @@ echo "$issues" | jq -c '.[]' | while read -r issue; do
     build_cmd="npm install && npm run build && npm test -- --run"
   fi
 
+  if [ "$is_bug" = "true" ]; then
+    task_type="Bug fix"
+    task_note="This is a confirmed bug found by the QA testing agent after deployment to dev. Fix the specific issue described — do not add unrelated changes."
+  else
+    task_type="Feature task"
+    task_note=""
+  fi
+
   read -r -d '' prompt << PROMPT || true
-Task from RetroStoreManager Kanban.
+${task_type} from RetroStoreManager Kanban.
 
 Issue #${number} in ${ORCHESTRATOR_REPO}: ${title}
 
 ${body}
+
+${task_note}
 
 Instructions:
 1. Read CLAUDE.md for coding standards and file map before making any changes.
@@ -205,4 +231,5 @@ PROMPT
     -f "inputs[branch]=development"
 
   echo "Dispatched issue #$number to $target_repo"
+  dispatched=$((dispatched + 1))
 done
