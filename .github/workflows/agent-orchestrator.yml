@@ -7,6 +7,7 @@ on:
     - cron: '0 */6 * * *'
 jobs:
   dispatch-tasks:
+    if: github.event_name != 'issues' || github.event.label.name == 'ready'
     runs-on: ubuntu-latest
     permissions:
       contents: read
