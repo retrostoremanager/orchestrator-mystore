@@ -4,9 +4,10 @@ set -euo pipefail
 ORCHESTRATOR_REPO="${ORCHESTRATOR_REPO:?}"
 GH_TOKEN="${GH_TOKEN:?}"          # built-in token for this repo (issues)
 DISPATCH_TOKEN="${DISPATCH_TOKEN:?}" # PAT for cross-repo dispatch
+TRIGGER_EVENT="${TRIGGER_EVENT:-workflow_dispatch}"
 
 # Issues stuck in-progress longer than this are considered failed/abandoned.
-# Must exceed the agent timeout (30m) + one orchestrator cycle (30m) + buffer.
+# Must exceed the agent timeout (30m) + one orchestrator cycle (6h) + buffer.
 STALE_THRESHOLD_SECONDS=7200  # 2 hours
 
 owner=$(echo "$ORCHESTRATOR_REPO" | cut -d'/' -f1)
@@ -34,8 +35,13 @@ branch_exists() {
 
 # ════════════════════════════════════════════════════════════════════════════
 # STEP 1 — Recover stale in-progress issues
+# Skip on label events — those fire instantly and stale recovery adds no value.
+# Only run on schedule (every 6h) or manual workflow_dispatch.
 # ════════════════════════════════════════════════════════════════════════════
-echo "Checking for stale in-progress issues..."
+if [ "$TRIGGER_EVENT" = "issues" ]; then
+  echo "Triggered by label event — skipping stale recovery (only runs on schedule)."
+else
+  echo "Checking for stale in-progress issues..."
 
 stale_issues=$(gh issue list \
   --repo "$ORCHESTRATOR_REPO" \
@@ -116,6 +122,7 @@ PROMPT
       --body "Previous agent run failed before creating a branch (likely a spending cap). Resetting to **ready** for a fresh attempt."
   fi
 done
+fi  # end of stale recovery block (skipped on label events)
 
 # ════════════════════════════════════════════════════════════════════════════
 # STEP 2 — Replenish backlog if running low
