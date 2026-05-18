@@ -64,11 +64,10 @@ PROMPT
 
 echo "Dispatching backlog generation agent to fn-mystore..."
 
+jq -n --arg prompt "$PROMPT" \
+  '{"ref":"main","inputs":{"prompt":$prompt,"branch":"development"}}' | \
 GH_TOKEN="$DISPATCH_TOKEN" gh api \
   "repos/${owner}/fn-mystore/actions/workflows/claude-code.yml/dispatches" \
-  --method POST \
-  --field ref=main \
-  -f "inputs[prompt]=${PROMPT}" \
-  -f "inputs[branch]=development"
+  --method POST --input -
 
 echo "Backlog generation dispatched."

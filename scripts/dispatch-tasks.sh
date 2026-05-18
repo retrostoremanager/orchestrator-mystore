@@ -123,12 +123,11 @@ Resume instructions:
 7. PR title: ${title}. PR body must include: Closes ${ORCHESTRATOR_REPO}#${number}
 PROMPT
 
+    jq -n --arg prompt "$prompt" --arg branch "$branch" \
+      '{"ref":"main","inputs":{"prompt":$prompt,"branch":$branch}}' | \
     GH_TOKEN="$DISPATCH_TOKEN" gh api \
       "repos/${owner}/${target_repo}/actions/workflows/claude-code.yml/dispatches" \
-      --method POST \
-      --field ref=main \
-      -f "inputs[prompt]=${prompt}" \
-      -f "inputs[branch]=${branch}"
+      --method POST --input -
 
     echo "Dispatched resume for issue #$number to $target_repo (branch: $branch)"
 
@@ -279,12 +278,11 @@ PROMPT
       --add-label in-progress
   fi
 
+  jq -n --arg prompt "$prompt" \
+    '{"ref":"main","inputs":{"prompt":$prompt,"branch":"development"}}' | \
   GH_TOKEN="$DISPATCH_TOKEN" gh api \
     "repos/${owner}/${target_repo}/actions/workflows/claude-code.yml/dispatches" \
-    --method POST \
-    --field ref=main \
-    -f "inputs[prompt]=${prompt}" \
-    -f "inputs[branch]=development"
+    --method POST --input -
 
   echo "Dispatched issue #$number to $target_repo"
   dispatched=$((dispatched + 1))
