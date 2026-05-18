@@ -81,16 +81,16 @@ echo "$stale_issues" | jq -c '.[]' | while read -r issue; do
   retry_count=$(echo "$issue" | jq -r '[.labels[].name | select(startswith("retry-"))] | length')
   next_retry=$((retry_count + 1))
 
-  # Hard stop at 3 retries — mark blocked and require human intervention
+  # Hard stop at 3 retries — mark agent-failed; STEP 3 will retry it at lower priority
   if [ "$retry_count" -ge 3 ]; then
-    echo "Issue #$number: hit retry cap ($retry_count retries) — marking blocked"
+    echo "Issue #$number: hit retry cap ($retry_count retries) — marking agent-failed"
     gh issue edit "$number" \
       --repo "$ORCHESTRATOR_REPO" \
       --remove-label in-progress \
-      --add-label blocked
+      --add-label agent-failed
     gh issue comment "$number" \
       --repo "$ORCHESTRATOR_REPO" \
-      --body "Agent has failed **$retry_count** times on this issue. Marking as **blocked** — likely a quota exhaustion or persistent error. Once resolved, remove \`blocked\` and add \`ready\` to retry."
+      --body "Agent has failed **$retry_count** times on this issue (likely quota exhaustion). Marking as **agent-failed** — will be retried automatically at lower priority once quota is restored."
     continue
   fi
 
@@ -168,17 +168,32 @@ fi
 # ════════════════════════════════════════════════════════════════════════════
 # STEP 3 — Dispatch new ready tasks
 # ════════════════════════════════════════════════════════════════════════════
-echo "Scanning for ready tasks in $ORCHESTRATOR_REPO..."
+echo "Scanning for ready and agent-failed tasks in $ORCHESTRATOR_REPO..."
 
-issues=$(gh issue list \
+ready_issues=$(gh issue list \
   --repo "$ORCHESTRATOR_REPO" \
   --label ready \
   --state open \
   --json number,title,body,labels \
   --limit 10)
 
-# Sort: priority:high issues first, then regular
-issues=$(echo "$issues" | jq 'sort_by(if (.labels | map(.name) | any(. == "priority:high")) then 0 else 1 end)')
+failed_issues=$(gh issue list \
+  --repo "$ORCHESTRATOR_REPO" \
+  --label agent-failed \
+  --state open \
+  --json number,title,body,labels \
+  --limit 10)
+
+# Merge and sort: priority:high first, agent-failed second, regular ready last
+issues=$(jq -s '
+  (.[0] + .[1]) | unique_by(.number) |
+  sort_by(
+    if (.labels | map(.name) | any(. == "priority:high")) then 0
+    elif (.labels | map(.name) | any(. == "agent-failed")) then 1
+    else 2
+    end
+  )
+' <(echo "$ready_issues") <(echo "$failed_issues"))
 
 count=$(echo "$issues" | jq length)
 echo "Found $count ready task(s)"
@@ -201,6 +216,7 @@ echo "$issues" | jq -c '.[]' | while read -r issue; do
   body=$(echo "$issue" | jq -r '.body // ""')
   is_bug=$(echo "$issue" | jq -r '[.labels[].name] | any(. == "bug")')
   is_priority=$(echo "$issue" | jq -r '[.labels[].name] | any(. == "priority:high")')
+  is_failed=$(echo "$issue" | jq -r '[.labels[].name] | any(. == "agent-failed")')
 
   target_repo=$(echo "$issue" | jq -r '.labels[].name' | grep '^repo:' | head -1 | sed 's/repo://')
 
@@ -247,10 +263,21 @@ Instructions:
 6. PR title: ${title}. PR body must include: Closes ${ORCHESTRATOR_REPO}#${number}
 PROMPT
 
-  gh issue edit "$number" \
-    --repo "$ORCHESTRATOR_REPO" \
-    --remove-label ready \
-    --add-label in-progress
+  if [ "$is_failed" = "true" ]; then
+    # Clear agent-failed and reset retry labels so stale recovery starts fresh
+    gh issue edit "$number" \
+      --repo "$ORCHESTRATOR_REPO" \
+      --remove-label agent-failed \
+      --add-label in-progress
+    for n in 1 2 3; do
+      gh issue edit "$number" --repo "$ORCHESTRATOR_REPO" --remove-label "retry-$n" 2>/dev/null || true
+    done
+  else
+    gh issue edit "$number" \
+      --repo "$ORCHESTRATOR_REPO" \
+      --remove-label ready \
+      --add-label in-progress
+  fi
 
   GH_TOKEN="$DISPATCH_TOKEN" gh api \
     "repos/${owner}/${target_repo}/actions/workflows/claude-code.yml/dispatches" \
