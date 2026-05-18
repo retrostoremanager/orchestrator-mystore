@@ -77,10 +77,31 @@ echo "$stale_issues" | jq -c '.[]' | while read -r issue; do
     continue
   fi
 
+  # Count how many times this issue has already been retried
+  retry_count=$(echo "$issue" | jq -r '[.labels[].name | select(startswith("retry-"))] | length')
+  next_retry=$((retry_count + 1))
+
+  # Hard stop at 3 retries — mark blocked and require human intervention
+  if [ "$retry_count" -ge 3 ]; then
+    echo "Issue #$number: hit retry cap ($retry_count retries) — marking blocked"
+    gh issue edit "$number" \
+      --repo "$ORCHESTRATOR_REPO" \
+      --remove-label in-progress \
+      --add-label blocked
+    gh issue comment "$number" \
+      --repo "$ORCHESTRATOR_REPO" \
+      --body "Agent has failed **$retry_count** times on this issue. Marking as **blocked** — likely a quota exhaustion or persistent error. Once resolved, remove \`blocked\` and add \`ready\` to retry."
+    continue
+  fi
+
   branch="feature/issue-${number}"
 
   if branch_exists "$target_repo" "$branch"; then
-    echo "Issue #$number: branch $branch exists — dispatching resume agent"
+    echo "Issue #$number: branch $branch exists — dispatching resume agent (retry $next_retry/3)"
+
+    gh issue edit "$number" \
+      --repo "$ORCHESTRATOR_REPO" \
+      --add-label "retry-$next_retry"
 
     read -r -d '' prompt << PROMPT || true
 RESUME incomplete task from RetroStoreManager Kanban.
@@ -112,14 +133,15 @@ PROMPT
     echo "Dispatched resume for issue #$number to $target_repo (branch: $branch)"
 
   else
-    echo "Issue #$number: no branch found — resetting to ready for fresh attempt"
+    echo "Issue #$number: no branch found — resetting to ready (retry $next_retry/3)"
     gh issue edit "$number" \
       --repo "$ORCHESTRATOR_REPO" \
       --remove-label in-progress \
-      --add-label ready
+      --add-label ready \
+      --add-label "retry-$next_retry"
     gh issue comment "$number" \
       --repo "$ORCHESTRATOR_REPO" \
-      --body "Previous agent run failed before creating a branch (likely a spending cap). Resetting to **ready** for a fresh attempt."
+      --body "Previous agent run failed before creating a branch (retry $next_retry/3). Resetting to **ready** for another attempt."
   fi
 done
 fi  # end of stale recovery block (skipped on label events)
