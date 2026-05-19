@@ -165,34 +165,80 @@ if [ "${open_count:-99}" -lt "$BACKLOG_THRESHOLD" ]; then
 fi
 
 # ════════════════════════════════════════════════════════════════════════════
-# STEP 3 — Dispatch new ready tasks
+# STEP 3 — Dispatch next ready task (sequential — one at a time)
 # ════════════════════════════════════════════════════════════════════════════
-echo "Scanning for ready and agent-failed tasks in $ORCHESTRATOR_REPO..."
+echo "Checking pipeline state..."
 
-ready_issues=$(gh issue list \
+active_count=$(gh issue list \
   --repo "$ORCHESTRATOR_REPO" \
-  --label ready \
   --state open \
-  --json number,title,body,labels \
-  --limit 10)
+  --json labels \
+  --jq '[.[] | select(.labels | map(.name) | any(. == "in-progress" or . == "code-review" or . == "in-test"))] | length' \
+  2>/dev/null || echo "0")
 
-failed_issues=$(gh issue list \
-  --repo "$ORCHESTRATOR_REPO" \
-  --label agent-failed \
-  --state open \
-  --json number,title,body,labels \
-  --limit 10)
+if [ "${active_count:-0}" -gt 0 ]; then
+  echo "Pipeline active ($active_count issue(s) in flight)"
 
-# Merge and sort: priority:high first, agent-failed second, regular ready last
-issues=$(jq -s '
-  (.[0] + .[1]) | unique_by(.number) |
-  sort_by(
-    if (.labels | map(.name) | any(. == "priority:high")) then 0
-    elif (.labels | map(.name) | any(. == "agent-failed")) then 1
-    else 2
-    end
-  )
-' <(echo "$ready_issues") <(echo "$failed_issues"))
+  in_test_number=$(gh issue list \
+    --repo "$ORCHESTRATOR_REPO" \
+    --label in-test \
+    --state open \
+    --json number \
+    --jq '.[0].number // empty' \
+    2>/dev/null || true)
+
+  if [ -z "$in_test_number" ]; then
+    echo "No in-test issue — waiting for in-progress/code-review work to complete."
+    exit 0
+  fi
+
+  echo "Issue #$in_test_number is in-test — checking for linked ready bug fixes..."
+
+  linked_bugs=$(gh issue list \
+    --repo "$ORCHESTRATOR_REPO" \
+    --label ready \
+    --label bug \
+    --state open \
+    --json number,title,body,labels \
+    --limit 10 \
+    --jq "[.[] | select(.body | contains(\"orchestrator-mystore#${in_test_number}\"))]")
+
+  bug_count=$(echo "$linked_bugs" | jq length)
+
+  if [ "$bug_count" -eq 0 ]; then
+    echo "No linked bug fixes ready — waiting for issue #$in_test_number to complete."
+    exit 0
+  fi
+
+  echo "Found $bug_count linked bug fix(es) for issue #$in_test_number — dispatching first"
+  issues="$linked_bugs"
+else
+  echo "Pipeline clear — picking next ready task..."
+
+  ready_issues=$(gh issue list \
+    --repo "$ORCHESTRATOR_REPO" \
+    --label ready \
+    --state open \
+    --json number,title,body,labels \
+    --limit 10)
+
+  failed_issues=$(gh issue list \
+    --repo "$ORCHESTRATOR_REPO" \
+    --label agent-failed \
+    --state open \
+    --json number,title,body,labels \
+    --limit 10)
+
+  issues=$(jq -s '
+    (.[0] + .[1]) | unique_by(.number) |
+    sort_by(
+      if (.labels | map(.name) | any(. == "priority:high")) then 0
+      elif (.labels | map(.name) | any(. == "agent-failed")) then 1
+      else 2
+      end
+    )
+  ' <(echo "$ready_issues") <(echo "$failed_issues"))
+fi
 
 count=$(echo "$issues" | jq length)
 echo "Found $count ready task(s)"
@@ -202,11 +248,11 @@ if [ "$count" -eq 0 ]; then
   exit 0
 fi
 
-# Dispatch at most 5 at once
+# Dispatch exactly one at a time
 dispatched=0
 
 echo "$issues" | jq -c '.[]' | while read -r issue; do
-  if [ "$dispatched" -ge 5 ]; then
+  if [ "$dispatched" -ge 1 ]; then
     break
   fi
 
