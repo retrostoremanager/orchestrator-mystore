@@ -62,6 +62,14 @@ echo "$stale_issues" | jq -c '.[]' | while read -r issue; do
     continue
   fi
 
+  # Skip if already marked done (contradictory labels — remove in-progress and move on)
+  has_done=$(echo "$issue" | jq -r '[.labels[].name] | any(. == "done")')
+  if [ "$has_done" = "true" ]; then
+    echo "Issue #$number already has done label — removing in-progress"
+    gh issue edit "$number" --repo "$ORCHESTRATOR_REPO" --remove-label in-progress
+    continue
+  fi
+
   # Calculate age in seconds
   age=$(( $(date +%s) - $(date -d "$updated_at" +%s) ))
   if [ "$age" -lt "$STALE_THRESHOLD_SECONDS" ]; then
