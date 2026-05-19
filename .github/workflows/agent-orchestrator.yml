@@ -7,7 +7,7 @@ on:
     - cron: '0 */6 * * *'
 jobs:
   dispatch-tasks:
-    if: github.event_name != 'issues' || github.event.label.name == 'ready'
+    if: github.event_name != 'issues' || github.event.label.name == 'ready' || github.event.label.name == 'done'
     runs-on: ubuntu-latest
     concurrency:
       group: orchestrator
