@@ -34,6 +34,62 @@ branch_exists() {
 }
 
 # ════════════════════════════════════════════════════════════════════════════
+# STEP 0 — Clear expired cap-wait labels and re-trigger stalled stages
+# ════════════════════════════════════════════════════════════════════════════
+cap_wait_issues=$(gh issue list \
+  --repo "$ORCHESTRATOR_REPO" \
+  --label cap-wait \
+  --state open \
+  --json number,labels \
+  --limit 10 \
+  2>/dev/null || echo "[]")
+
+echo "$cap_wait_issues" | jq -c '.[]' | while read -r issue; do
+  number=$(echo "$issue" | jq -r '.number')
+
+  reset_iso=$(gh issue view "$number" --repo "$ORCHESTRATOR_REPO" --json comments \
+    --jq '[.comments[] | select(.body | contains("RESET_ISO:"))] | last | .body' \
+    2>/dev/null | grep -oP 'RESET_ISO: \K\S+' || true)
+
+  if [ -n "$reset_iso" ]; then
+    reset_epoch=$(date -d "$reset_iso" +%s 2>/dev/null || echo "0")
+    current_epoch=$(date +%s)
+    if [ "$current_epoch" -lt "$reset_epoch" ]; then
+      remaining=$(( (reset_epoch - current_epoch) / 60 ))
+      echo "Issue #$number: cap-wait active for ${remaining}m more — skipping"
+      continue
+    fi
+  fi
+
+  echo "Issue #$number: cap-wait expired — clearing label"
+  gh issue edit "$number" --repo "$ORCHESTRATOR_REPO" --remove-label "cap-wait"
+
+  # If in-test, re-trigger the test agent (in-progress will be handled by STEP 1 stale recovery)
+  has_in_test=$(echo "$issue" | jq -r '[.labels[].name] | any(. == "in-test")')
+  if [ "$has_in_test" = "true" ]; then
+    target_repo=$(echo "$issue" | jq -r '[.labels[].name | select(startswith("repo:"))] | first // empty' | sed 's/repo://')
+    if [ -n "$target_repo" ]; then
+      pr_number=$(GH_TOKEN="$DISPATCH_TOKEN" gh pr list \
+        --repo "${owner}/${target_repo}" \
+        --state merged \
+        --json number,body \
+        --jq "[.[] | select(.body | contains(\"orchestrator-mystore#${number}\"))] | .[0].number // empty" \
+        2>/dev/null || true)
+      if [ -n "$pr_number" ] && [ "$pr_number" != "null" ]; then
+        GH_TOKEN="$DISPATCH_TOKEN" gh workflow run test-agent.yml \
+          --repo "${owner}/${target_repo}" --ref main \
+          -f pr_number="$pr_number" \
+          -f target_repo="$target_repo" \
+          -f orchestrator_issue="$number"
+        echo "Re-triggered test agent for issue #$number (PR #$pr_number)"
+      else
+        echo "Issue #$number: in-test but no merged PR found — skipping test re-trigger"
+      fi
+    fi
+  fi
+done
+
+# ════════════════════════════════════════════════════════════════════════════
 # STEP 1 — Recover stale in-progress issues
 # Skip on label events — those fire instantly and stale recovery adds no value.
 # Only run on schedule (every 6h) or manual workflow_dispatch.
@@ -59,6 +115,13 @@ echo "$stale_issues" | jq -c '.[]' | while read -r issue; do
 
   if [ -z "$target_repo" ]; then
     echo "Stale issue #$number has no repo: label - skipping"
+    continue
+  fi
+
+  # Skip if waiting for spending cap to reset
+  has_cap_wait=$(echo "$issue" | jq -r '[.labels[].name] | any(. == "cap-wait")')
+  if [ "$has_cap_wait" = "true" ]; then
+    echo "Issue #$number has active cap-wait — skipping stale recovery"
     continue
   fi
 

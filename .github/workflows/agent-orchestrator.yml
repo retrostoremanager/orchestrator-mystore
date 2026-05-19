@@ -4,7 +4,7 @@ on:
   issues:
     types: [labeled]
   schedule:
-    - cron: '0 */6 * * *'
+    - cron: '*/30 * * * *'
 jobs:
   dispatch-tasks:
     if: github.event_name != 'issues' || github.event.label.name == 'ready' || github.event.label.name == 'done'
