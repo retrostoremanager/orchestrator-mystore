@@ -250,39 +250,86 @@ active_count=$(gh issue list \
 if [ "${active_count:-0}" -gt 0 ]; then
   echo "Pipeline active ($active_count issue(s) in flight)"
 
-  in_test_number=$(gh issue list \
+  in_test_issues=$(gh issue list \
     --repo "$ORCHESTRATOR_REPO" \
     --label in-test \
     --state open \
-    --json number \
-    --jq '.[0].number // empty' \
-    2>/dev/null || true)
+    --json number,labels,updatedAt \
+    --limit 20 \
+    2>/dev/null || echo "[]")
 
-  if [ -z "$in_test_number" ]; then
-    echo "No in-test issue — waiting for in-progress/code-review work to complete."
+  in_test_count=$(echo "$in_test_issues" | jq length)
+
+  if [ "$in_test_count" -eq 0 ]; then
+    echo "No in-test issues — waiting for in-progress/code-review work to complete."
     exit 0
   fi
 
-  echo "Issue #$in_test_number is in-test — checking for linked ready bug fixes..."
+  # Check ALL in-test issues for linked ready bug fixes; also find stale ones to re-trigger
+  linked_bugs=""
+  retest_number=""
+  retest_repo=""
+  retest_pr=""
 
-  linked_bugs=$(gh issue list \
-    --repo "$ORCHESTRATOR_REPO" \
-    --label ready \
-    --label bug \
-    --state open \
-    --json number,title,body,labels \
-    --limit 10 \
-    --jq "[.[] | select(.body | contains(\"orchestrator-mystore#${in_test_number}\"))]")
+  while IFS= read -r in_test_entry; do
+    in_test_number=$(echo "$in_test_entry" | jq -r '.number')
+    echo "Checking issue #$in_test_number (in-test) for linked ready bugs..."
 
-  bug_count=$(echo "$linked_bugs" | jq length)
+    linked=$(gh issue list \
+      --repo "$ORCHESTRATOR_REPO" \
+      --label ready --label bug --state open \
+      --json number,title,body,labels \
+      --limit 10 \
+      --jq "[.[] | select(.body | contains(\"orchestrator-mystore#${in_test_number}\"))]" \
+      2>/dev/null || echo "[]")
 
-  if [ "$bug_count" -eq 0 ]; then
-    echo "No linked bug fixes ready — waiting for issue #$in_test_number to complete."
+    cnt=$(echo "$linked" | jq length)
+    if [ "$cnt" -gt 0 ]; then
+      echo "Found $cnt bug(s) linked to #$in_test_number — dispatching first"
+      linked_bugs="$linked"
+      break
+    fi
+
+    echo "No linked ready bugs for #$in_test_number"
+
+    # Check if this in-test issue is stale and should have its test re-triggered
+    if [ -z "$retest_number" ]; then
+      updated_at=$(echo "$in_test_entry" | jq -r '.updatedAt')
+      age=$(( $(date +%s) - $(date -d "$updated_at" +%s) ))
+      if [ "$age" -gt "$STALE_THRESHOLD_SECONDS" ]; then
+        target_repo_raw=$(echo "$in_test_entry" | jq -r '[.labels[].name | select(startswith("repo:"))] | first // empty' | sed 's/repo://')
+        if [ -n "$target_repo_raw" ]; then
+          pr=$(GH_TOKEN="$DISPATCH_TOKEN" gh pr list \
+            --repo "${owner}/${target_repo_raw}" --state merged \
+            --json number,body \
+            --jq "[.[] | select(.body | contains(\"orchestrator-mystore#${in_test_number}\"))] | .[0].number // empty" \
+            2>/dev/null || true)
+          if [ -n "$pr" ] && [ "$pr" != "null" ]; then
+            retest_number="$in_test_number"
+            retest_repo="$target_repo_raw"
+            retest_pr="$pr"
+            echo "Issue #$in_test_number is stale ($((age/60))m) — will re-trigger test (PR #$pr)"
+          fi
+        fi
+      fi
+    fi
+  done < <(echo "$in_test_issues" | jq -c '.[]')
+
+  if [ -n "$linked_bugs" ]; then
+    issues="$linked_bugs"
+  elif [ -n "$retest_number" ]; then
+    echo "Re-triggering stale test for issue #$retest_number (PR #$retest_pr in $retest_repo)"
+    GH_TOKEN="$DISPATCH_TOKEN" gh workflow run test-agent.yml \
+      --repo "${owner}/${retest_repo}" --ref main \
+      -f pr_number="$retest_pr" \
+      -f target_repo="$retest_repo" \
+      -f orchestrator_issue="$retest_number"
+    echo "Dispatched test re-trigger for issue #$retest_number"
+    exit 0
+  else
+    echo "All in-test issues have active linked work — waiting."
     exit 0
   fi
-
-  echo "Found $bug_count linked bug fix(es) for issue #$in_test_number — dispatching first"
-  issues="$linked_bugs"
 else
   echo "Pipeline clear — picking next ready task..."
 
