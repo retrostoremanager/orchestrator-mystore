@@ -214,10 +214,11 @@ Resume instructions:
 1. Check out the existing branch ${branch} — do NOT create a new branch.
 2. Run: git log origin/development..HEAD --oneline   to see what was already committed.
 3. Run: dotnet build MyStore.sln   to check current build state.
-4. Review the acceptance criteria above and complete any remaining items.
-5. Run: dotnet test MyStore.Tests/MyStore.Tests.csproj
-6. If all tests pass, open a pull request targeting the development branch.
-7. PR title: ${title}. PR body must include: Closes ${ORCHESTRATOR_REPO}#${number}
+4. If the task involves SQL queries: read the relevant schema from retrostoremanager/dbproj-mystore (development branch, PostgreSQL/ directory) — exact column names are there. Use: GH_TOKEN="$GH_DISPATCH_TOKEN" gh api "repos/retrostoremanager/dbproj-mystore/contents/PostgreSQL/<file>?ref=development" --jq '.content' | base64 -d
+5. Review the acceptance criteria above and complete any remaining items.
+6. Run: dotnet test MyStore.Tests/MyStore.Tests.csproj
+7. If all tests pass, open a pull request targeting the development branch.
+8. PR title: ${title}. PR body must include: Closes ${ORCHESTRATOR_REPO}#${number}
 PROMPT
 
     jq -n --arg prompt "$prompt" --arg branch "$branch" \
@@ -448,11 +449,12 @@ ${task_note}
 
 Instructions:
 1. Read CLAUDE.md for coding standards and file map before making any changes.
-2. Create a feature branch feature/issue-${number} off the development branch.
-3. Implement the task following all project conventions.
-4. Run: ${build_cmd}
-5. Open a pull request targeting the development branch.
-6. PR title: ${title}. PR body must include: Closes ${ORCHESTRATOR_REPO}#${number}
+2. If the task involves database queries or SQL: read the relevant schema file(s) from retrostoremanager/dbproj-mystore (development branch, PostgreSQL/ directory) before writing any SQL — exact column names are there. Use: GH_TOKEN="$GH_DISPATCH_TOKEN" gh api "repos/retrostoremanager/dbproj-mystore/contents/PostgreSQL/<file>?ref=development" --jq '.content' | base64 -d
+3. Create a feature branch feature/issue-${number} off the development branch.
+4. Implement the task following all project conventions.
+5. Run: ${build_cmd}
+6. Open a pull request targeting the development branch.
+7. PR title: ${title}. PR body must include: Closes ${ORCHESTRATOR_REPO}#${number}
 PROMPT
 
   if [ "$is_failed" = "true" ]; then
