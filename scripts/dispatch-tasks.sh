@@ -8,7 +8,7 @@ TRIGGER_EVENT="${TRIGGER_EVENT:-workflow_dispatch}"
 
 # Issues stuck in-progress longer than this are considered failed/abandoned.
 # Must exceed the agent timeout (30m) + one orchestrator cycle (6h) + buffer.
-STALE_THRESHOLD_SECONDS=7200  # 2 hours
+STALE_THRESHOLD_SECONDS=21600  # 6 hours
 
 owner=$(echo "$ORCHESTRATOR_REPO" | cut -d'/' -f1)
 
@@ -78,9 +78,9 @@ echo "$cap_wait_issues" | jq -c '.[]' | while read -r issue; do
       if [ -n "$pr_number" ] && [ "$pr_number" != "null" ]; then
         GH_TOKEN="$DISPATCH_TOKEN" gh workflow run test-agent.yml \
           --repo "${owner}/${target_repo}" --ref main \
-          -f pr_number="$pr_number" \
+          -f pr_numbers="$pr_number" \
           -f target_repo="$target_repo" \
-          -f orchestrator_issue="$number"
+          -f orchestrator_issues="$number"
         echo "Re-triggered test agent for issue #$number (PR #$pr_number)"
       else
         echo "Issue #$number: in-test but no merged PR found — skipping test re-trigger"
@@ -293,9 +293,9 @@ if [ "${active_count:-0}" -gt 0 ]; then
 
   # Check ALL in-test issues for linked ready bug fixes; also find stale ones to re-trigger
   linked_bugs=""
-  retest_number=""
+  retest_prs=""
+  retest_issues=""
   retest_repo=""
-  retest_pr=""
 
   while IFS= read -r in_test_entry; do
     in_test_number=$(echo "$in_test_entry" | jq -r '.number')
@@ -319,23 +319,26 @@ if [ "${active_count:-0}" -gt 0 ]; then
     echo "No linked ready bugs for #$in_test_number"
 
     # Check if this in-test issue is stale and should have its test re-triggered
-    if [ -z "$retest_number" ]; then
-      updated_at=$(echo "$in_test_entry" | jq -r '.updatedAt')
-      age=$(( $(date +%s) - $(date -d "$updated_at" +%s) ))
-      if [ "$age" -gt "$STALE_THRESHOLD_SECONDS" ]; then
-        target_repo_raw=$(echo "$in_test_entry" | jq -r '[.labels[].name | select(startswith("repo:"))] | first // empty' | sed 's/repo://')
-        if [ -n "$target_repo_raw" ]; then
-          pr=$(GH_TOKEN="$DISPATCH_TOKEN" gh pr list \
-            --repo "${owner}/${target_repo_raw}" --state merged \
-            --json number,body \
-            --jq "[.[] | select(.body | contains(\"orchestrator-mystore#${in_test_number}\"))] | .[0].number // empty" \
-            2>/dev/null || true)
-          if [ -n "$pr" ] && [ "$pr" != "null" ]; then
-            retest_number="$in_test_number"
+    updated_at=$(echo "$in_test_entry" | jq -r '.updatedAt')
+    age=$(( $(date +%s) - $(date -d "$updated_at" +%s) ))
+    if [ "$age" -gt "$STALE_THRESHOLD_SECONDS" ]; then
+      target_repo_raw=$(echo "$in_test_entry" | jq -r '[.labels[].name | select(startswith("repo:"))] | first // empty' | sed 's/repo://')
+      if [ -n "$target_repo_raw" ]; then
+        pr=$(GH_TOKEN="$DISPATCH_TOKEN" gh pr list \
+          --repo "${owner}/${target_repo_raw}" --state merged \
+          --json number,body \
+          --jq "[.[] | select(.body | contains(\"orchestrator-mystore#${in_test_number}\"))] | .[0].number // empty" \
+          2>/dev/null || true)
+        if [ -n "$pr" ] && [ "$pr" != "null" ]; then
+          if [ -z "$retest_prs" ]; then
+            retest_prs="$pr"
+            retest_issues="$in_test_number"
             retest_repo="$target_repo_raw"
-            retest_pr="$pr"
-            echo "Issue #$in_test_number is stale ($((age/60))m) — will re-trigger test (PR #$pr)"
+          else
+            retest_prs="${retest_prs},${pr}"
+            retest_issues="${retest_issues},${in_test_number}"
           fi
+          echo "Issue #$in_test_number is stale ($((age/60))m) — will re-trigger test (PR #$pr)"
         fi
       fi
     fi
@@ -343,14 +346,14 @@ if [ "${active_count:-0}" -gt 0 ]; then
 
   if [ -n "$linked_bugs" ]; then
     issues="$linked_bugs"
-  elif [ -n "$retest_number" ]; then
-    echo "Re-triggering stale test for issue #$retest_number (PR #$retest_pr in $retest_repo)"
+  elif [ -n "$retest_prs" ]; then
+    echo "Re-triggering stale tests: issues $retest_issues (PRs $retest_prs in $retest_repo)"
     GH_TOKEN="$DISPATCH_TOKEN" gh workflow run test-agent.yml \
       --repo "${owner}/${retest_repo}" --ref main \
-      -f pr_number="$retest_pr" \
+      -f pr_numbers="$retest_prs" \
       -f target_repo="$retest_repo" \
-      -f orchestrator_issue="$retest_number"
-    echo "Dispatched test re-trigger for issue #$retest_number"
+      -f orchestrator_issues="$retest_issues"
+    echo "Dispatched batched test re-trigger for issues $retest_issues"
     exit 0
   else
     echo "All in-test issues have active linked work — waiting."
