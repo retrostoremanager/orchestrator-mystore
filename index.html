@@ -1,0 +1,362 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>MyStore Pipeline</title>
+  <style>
+    :root {
+      --bg: #0d1117;
+      --surface: #161b22;
+      --border: #30363d;
+      --text: #e6edf3;
+      --muted: #8b949e;
+      --green: #3fb950;
+      --yellow: #d29922;
+      --red: #f85149;
+      --blue: #58a6ff;
+      --purple: #bc8cff;
+      --orange: #ffa657;
+    }
+    * { box-sizing: border-box; margin: 0; padding: 0; }
+    body {
+      background: var(--bg);
+      color: var(--text);
+      font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Helvetica, Arial, sans-serif;
+      padding: 24px;
+      min-height: 100vh;
+      max-width: 1200px;
+      margin: 0 auto;
+    }
+    header {
+      display: flex;
+      align-items: center;
+      justify-content: space-between;
+      margin-bottom: 24px;
+      padding-bottom: 16px;
+      border-bottom: 1px solid var(--border);
+    }
+    h1 { font-size: 20px; font-weight: 600; }
+    .meta { color: var(--muted); font-size: 13px; }
+    .header-right { display: flex; align-items: center; gap: 12px; }
+    .refresh-btn {
+      background: var(--surface);
+      border: 1px solid var(--border);
+      color: var(--text);
+      padding: 6px 14px;
+      border-radius: 6px;
+      cursor: pointer;
+      font-size: 13px;
+      transition: background 0.15s;
+    }
+    .refresh-btn:hover { background: #21262d; }
+    .agents-grid {
+      display: grid;
+      grid-template-columns: repeat(3, 1fr);
+      gap: 16px;
+      margin-bottom: 24px;
+    }
+    @media (max-width: 860px) { .agents-grid { grid-template-columns: 1fr; } }
+    .agent-card {
+      background: var(--surface);
+      border: 1px solid var(--border);
+      border-radius: 8px;
+      padding: 20px;
+      min-height: 160px;
+    }
+    .agent-header {
+      display: flex;
+      align-items: center;
+      justify-content: space-between;
+      margin-bottom: 16px;
+    }
+    .agent-title {
+      font-size: 11px;
+      font-weight: 600;
+      text-transform: uppercase;
+      letter-spacing: 0.8px;
+      color: var(--muted);
+    }
+    .status-badge {
+      display: inline-flex;
+      align-items: center;
+      gap: 5px;
+      font-size: 12px;
+      font-weight: 500;
+      padding: 3px 10px;
+      border-radius: 12px;
+    }
+    .status-running  { background: rgba(63,185,80,0.15);   color: var(--green); }
+    .status-queued   { background: rgba(210,153,34,0.15);  color: var(--yellow); }
+    .status-idle     { background: rgba(139,148,158,0.12); color: var(--muted); }
+    .dot { width: 7px; height: 7px; border-radius: 50%; background: currentColor; flex-shrink: 0; }
+    @keyframes pulse { 0%,100% { opacity: 1; } 50% { opacity: 0.25; } }
+    .dot-pulse { animation: pulse 1.8s ease-in-out infinite; }
+    .issue-list { display: flex; flex-direction: column; gap: 8px; }
+    .issue-item {
+      padding: 10px 12px;
+      background: var(--bg);
+      border: 1px solid var(--border);
+      border-radius: 6px;
+    }
+    .issue-num { font-size: 12px; color: var(--muted); margin-bottom: 3px; }
+    .issue-title-text { font-size: 13px; line-height: 1.45; }
+    .issue-footer { font-size: 11px; color: var(--muted); margin-top: 5px; display: flex; gap: 10px; }
+    .no-work { color: var(--muted); font-size: 13px; font-style: italic; }
+    a { color: var(--blue); text-decoration: none; }
+    a:hover { text-decoration: underline; }
+    .queue-card {
+      background: var(--surface);
+      border: 1px solid var(--border);
+      border-radius: 8px;
+      padding: 20px;
+    }
+    .queue-title {
+      font-size: 11px;
+      font-weight: 600;
+      text-transform: uppercase;
+      letter-spacing: 0.8px;
+      color: var(--muted);
+      margin-bottom: 16px;
+    }
+    .queue-rows { display: flex; flex-direction: column; gap: 0; }
+    .queue-row {
+      display: flex;
+      align-items: center;
+      gap: 14px;
+      padding: 10px 0;
+      border-bottom: 1px solid var(--border);
+    }
+    .queue-row:last-child { border-bottom: none; }
+    .q-label {
+      font-size: 12px;
+      font-weight: 500;
+      padding: 2px 10px;
+      border-radius: 12px;
+      white-space: nowrap;
+      min-width: 105px;
+      text-align: center;
+    }
+    .lbl-in-progress { background: rgba(88,166,255,0.15);  color: var(--blue); }
+    .lbl-code-review  { background: rgba(188,140,255,0.15); color: var(--purple); }
+    .lbl-in-test      { background: rgba(255,166,87,0.15);  color: var(--orange); }
+    .lbl-ready        { background: rgba(63,185,80,0.15);   color: var(--green); }
+    .lbl-cap-wait     { background: rgba(248,81,73,0.15);   color: var(--red); }
+    .lbl-other        { background: rgba(139,148,158,0.12); color: var(--muted); }
+    .chips { display: flex; flex-wrap: wrap; gap: 6px; }
+    .chip {
+      font-size: 12px;
+      padding: 2px 8px;
+      background: var(--bg);
+      border: 1px solid var(--border);
+      border-radius: 4px;
+      color: var(--text);
+      text-decoration: none;
+      transition: border-color 0.12s, color 0.12s;
+    }
+    .chip:hover { border-color: var(--blue); color: var(--blue); text-decoration: none; }
+    .empty-dash { color: var(--muted); font-size: 13px; }
+    .error-txt { color: var(--red); font-size: 13px; }
+    .loading-txt { color: var(--muted); font-size: 13px; }
+  </style>
+</head>
+<body>
+
+<header>
+  <div>
+    <h1>MyStore Pipeline</h1>
+    <div class="meta" style="margin-top:4px" id="last-updated">Loading…</div>
+  </div>
+  <div class="header-right">
+    <span class="meta" id="countdown"></span>
+    <button class="refresh-btn" onclick="doRefresh()">↻ Refresh</button>
+  </div>
+</header>
+
+<div class="agents-grid">
+  <div class="agent-card">
+    <div class="agent-header">
+      <span class="agent-title">Developer Agent</span>
+      <span class="status-badge status-idle" id="dev-badge"><span class="dot"></span>&nbsp;Idle</span>
+    </div>
+    <div id="dev-body" class="loading-txt">Loading…</div>
+  </div>
+  <div class="agent-card">
+    <div class="agent-header">
+      <span class="agent-title">Code Review Agent</span>
+      <span class="status-badge status-idle" id="rev-badge"><span class="dot"></span>&nbsp;Idle</span>
+    </div>
+    <div id="rev-body" class="loading-txt">Loading…</div>
+  </div>
+  <div class="agent-card">
+    <div class="agent-header">
+      <span class="agent-title">Test Agent</span>
+      <span class="status-badge status-idle" id="tst-badge"><span class="dot"></span>&nbsp;Idle</span>
+    </div>
+    <div id="tst-body" class="loading-txt">Loading…</div>
+  </div>
+</div>
+
+<div class="queue-card">
+  <div class="queue-title">Issue Queue</div>
+  <div class="queue-rows" id="queue-rows">
+    <div class="loading-txt">Loading…</div>
+  </div>
+</div>
+
+<script>
+  const ORCH  = 'retrostoremanager/orchestrator-mystore';
+  const FN    = 'retrostoremanager/fn-mystore';
+  const GH    = 'https://api.github.com';
+  const REFRESH_SEC = 180;
+
+  let timer, cdTimer, cd = REFRESH_SEC;
+
+  function esc(s) {
+    return String(s)
+      .replace(/&/g,'&amp;').replace(/</g,'&lt;')
+      .replace(/>/g,'&gt;').replace(/"/g,'&quot;');
+  }
+
+  function ago(d) {
+    const s = Math.floor((Date.now() - new Date(d)) / 1000);
+    if (s < 60)   return s + 's ago';
+    if (s < 3600) return Math.floor(s/60) + 'm ago';
+    if (s < 86400)return Math.floor(s/3600) + 'h ago';
+    return Math.floor(s/86400) + 'd ago';
+  }
+
+  async function get(url) {
+    const r = await fetch(url, { headers: { Accept: 'application/vnd.github+json' } });
+    if (!r.ok) throw new Error('GitHub API ' + r.status + ': ' + url.replace(GH,''));
+    return r.json();
+  }
+
+  function setBadge(id, status) {
+    const el = document.getElementById(id);
+    const cls = { running:'status-running', queued:'status-queued', idle:'status-idle' }[status] || 'status-idle';
+    const label = { running:'Running', queued:'Queued', idle:'Idle' }[status] || 'Idle';
+    const dotClass = status === 'running' ? 'dot dot-pulse' : 'dot';
+    el.className = 'status-badge ' + cls;
+    el.innerHTML = `<span class="${dotClass}"></span>&nbsp;${label}`;
+  }
+
+  function renderAgentBody(el, issues, runUrl) {
+    if (!issues.length) {
+      el.innerHTML = '<span class="no-work">No active work</span>';
+      return;
+    }
+    el.innerHTML = '<div class="issue-list">' + issues.map(i => `
+      <div class="issue-item">
+        <div class="issue-num"><a href="${i.html_url}" target="_blank">#${i.number}</a></div>
+        <div class="issue-title-text">${esc(i.title)}</div>
+        <div class="issue-footer">
+          <span>opened ${ago(i.created_at)}</span>
+          ${runUrl ? `<a href="${runUrl}" target="_blank">view run ↗</a>` : ''}
+        </div>
+      </div>`).join('') + '</div>';
+  }
+
+  async function doRefresh() {
+    clearTimeout(timer);
+    clearInterval(cdTimer);
+    cd = REFRESH_SEC;
+    document.getElementById('last-updated').textContent = 'Refreshing…';
+    document.getElementById('countdown').textContent = '';
+
+    try {
+      const [issues, claudeRuns, testRuns] = await Promise.all([
+        get(`${GH}/repos/${ORCH}/issues?state=open&per_page=100`),
+        get(`${GH}/repos/${FN}/actions/workflows/claude-code.yml/runs?per_page=15`),
+        get(`${GH}/repos/${FN}/actions/workflows/test-agent.yml/runs?per_page=10`),
+      ]);
+
+      // Group issues by first matching pipeline label
+      const buckets = { 'in-progress':[], 'code-review':[], 'in-test':[], 'cap-wait':[], 'ready':[], 'other':[] };
+      const ORDER = ['in-progress','code-review','in-test','cap-wait','ready'];
+      issues.forEach(issue => {
+        const names = issue.labels.map(l => l.name);
+        const match = ORDER.find(lbl => names.includes(lbl));
+        (buckets[match || 'other'] ||= []).push(issue);
+      });
+
+      // Active workflow runs
+      const isActive = r => r.status === 'in_progress' || r.status === 'queued';
+      const activeTestRun = testRuns.workflow_runs?.find(isActive);
+
+      // Split claude runs: dev (feature branches) vs review (development branch)
+      const allActive = claudeRuns.workflow_runs?.filter(isActive) ?? [];
+      let activeDevRun = null, activeRevRun = null;
+      for (const run of allActive) {
+        const branch = run.head_branch ?? '';
+        const issueMatch = branch.match(/^feature\/issue-(\d+)$/);
+        if (issueMatch) {
+          const num = parseInt(issueMatch[1]);
+          if (buckets['code-review'].some(i => i.number === num)) {
+            activeRevRun = activeRevRun || run;
+          } else {
+            activeDevRun = activeDevRun || run;
+          }
+        } else if (branch === 'development') {
+          activeRevRun = activeRevRun || run;
+        } else {
+          activeDevRun = activeDevRun || run;
+        }
+      }
+
+      // Determine badge status
+      const devStatus  = activeDevRun  ? activeDevRun.status  : (buckets['in-progress'].length ? 'queued' : 'idle');
+      const revStatus  = activeRevRun  ? activeRevRun.status  : (buckets['code-review'].length  ? 'queued' : 'idle');
+      const tstStatus  = activeTestRun ? activeTestRun.status : (buckets['in-test'].length       ? 'queued' : 'idle');
+
+      setBadge('dev-badge', devStatus === 'in_progress' ? 'running' : devStatus);
+      setBadge('rev-badge', revStatus === 'in_progress' ? 'running' : revStatus);
+      setBadge('tst-badge', tstStatus === 'in_progress' ? 'running' : tstStatus);
+
+      renderAgentBody(document.getElementById('dev-body'), buckets['in-progress'], activeDevRun?.html_url);
+      renderAgentBody(document.getElementById('rev-body'), buckets['code-review'],  activeRevRun?.html_url);
+      renderAgentBody(document.getElementById('tst-body'), buckets['in-test'],      activeTestRun?.html_url);
+
+      // Render queue
+      const queueDef = [
+        { key:'in-progress', cls:'lbl-in-progress' },
+        { key:'code-review',  cls:'lbl-code-review'  },
+        { key:'in-test',      cls:'lbl-in-test'      },
+        { key:'ready',        cls:'lbl-ready'         },
+        { key:'cap-wait',     cls:'lbl-cap-wait'      },
+        { key:'other',        cls:'lbl-other',  label:'backlog' },
+      ];
+      document.getElementById('queue-rows').innerHTML = queueDef.map(({ key, cls, label }) => {
+        const items = buckets[key] ?? [];
+        const chips = items.length
+          ? items.map(i => `<a href="${i.html_url}" target="_blank" class="chip" title="${esc(i.title)}">#${i.number}</a>`).join('')
+          : '<span class="empty-dash">—</span>';
+        return `<div class="queue-row">
+          <span class="q-label ${cls}">${label || key}</span>
+          <div class="chips">${chips}</div>
+        </div>`;
+      }).join('');
+
+      document.getElementById('last-updated').textContent =
+        'Last updated ' + new Date().toLocaleTimeString();
+
+    } catch (err) {
+      document.getElementById('last-updated').innerHTML =
+        `<span class="error-txt">Error: ${esc(err.message)} — check GitHub API rate limit or repo visibility</span>`;
+    }
+
+    // Schedule next refresh + countdown
+    timer = setTimeout(doRefresh, REFRESH_SEC * 1000);
+    cdTimer = setInterval(() => {
+      cd--;
+      if (cd <= 0) { clearInterval(cdTimer); return; }
+      const m = Math.floor(cd / 60), s = cd % 60;
+      document.getElementById('countdown').textContent =
+        'refreshing in ' + (m ? m + 'm ' : '') + s + 's';
+    }, 1000);
+  }
+
+  doRefresh();
+</script>
+</body>
+</html>
