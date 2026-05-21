@@ -171,10 +171,23 @@ echo "$stale_issues" | jq -c '.[]' | while read -r issue; do
     continue
   fi
 
-  # Calculate age in seconds
+  # Calculate age in seconds.
+  # Use a shorter threshold when no agent runs are active — means the issue is
+  # genuinely abandoned (cap hit, network error) rather than legitimately running.
+  # This avoids the 6h wait for issues that are clearly stuck with no active agent.
   age=$(( $(date +%s) - $(date -d "$updated_at" +%s) ))
-  if [ "$age" -lt "$STALE_THRESHOLD_SECONDS" ]; then
-    echo "Issue #$number has been in-progress for $((age/60))m - still within timeout, skipping"
+  active_runs=$(GH_TOKEN="$DISPATCH_TOKEN" gh run list \
+    --repo "${owner}/${target_repo}" \
+    --workflow=claude-code.yml \
+    --status in_progress \
+    --json status --jq 'length' 2>/dev/null || echo "0")
+  if [ "${active_runs:-0}" -eq 0 ]; then
+    effective_threshold=5400  # 90 min — no agent running, so this is definitely abandoned
+  else
+    effective_threshold="$STALE_THRESHOLD_SECONDS"  # 6h — agent running, give it time
+  fi
+  if [ "$age" -lt "$effective_threshold" ]; then
+    echo "Issue #$number has been in-progress for $((age/60))m (threshold: $((effective_threshold/60))m, active runs: ${active_runs:-0}) - skipping"
     continue
   fi
 
@@ -341,10 +354,22 @@ if [ "${active_count:-0}" -gt 0 ]; then
 
     echo "No linked ready bugs for #$in_test_number"
 
-    # Check if this in-test issue is stale and should have its test re-triggered
+    # Check if this in-test issue is stale and should have its test re-triggered.
+    # Use shorter threshold when no test agent is active (issue is abandoned, not running).
     updated_at=$(echo "$in_test_entry" | jq -r '.updatedAt')
     age=$(( $(date +%s) - $(date -d "$updated_at" +%s) ))
-    if [ "$age" -gt "$STALE_THRESHOLD_SECONDS" ]; then
+    target_repo_raw=$(echo "$in_test_entry" | jq -r '[.labels[].name | select(startswith("repo:"))] | first // empty' | sed 's/repo://')
+    if [ -n "$target_repo_raw" ]; then
+      test_active=$(GH_TOKEN="$DISPATCH_TOKEN" gh run list \
+        --repo "${owner}/${target_repo_raw}" \
+        --workflow=test-agent.yml \
+        --status in_progress \
+        --json status --jq 'length' 2>/dev/null || echo "0")
+    else
+      test_active=0
+    fi
+    in_test_threshold=$([ "${test_active:-0}" -eq 0 ] && echo 5400 || echo "$STALE_THRESHOLD_SECONDS")
+    if [ "$age" -gt "$in_test_threshold" ]; then
       target_repo_raw=$(echo "$in_test_entry" | jq -r '[.labels[].name | select(startswith("repo:"))] | first // empty' | sed 's/repo://')
       if [ -n "$target_repo_raw" ]; then
         pr=$(GH_TOKEN="$DISPATCH_TOKEN" gh pr list \
