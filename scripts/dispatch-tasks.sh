@@ -144,7 +144,8 @@ stale_issues=$(gh issue list \
   --json number,title,body,labels,updatedAt \
   --limit 20)
 
-echo "$stale_issues" | jq -c '.[]' | while read -r issue; do
+stale_dispatched=0
+while IFS= read -r issue; do
   number=$(echo "$issue" | jq -r '.number')
   title=$(echo "$issue" | jq -r '.title')
   body=$(echo "$issue" | jq -r '.body // ""')
@@ -253,6 +254,8 @@ PROMPT
       --method POST --input -
 
     echo "Dispatched resume for issue #$number to $target_repo (branch: $branch)"
+    stale_dispatched=$((stale_dispatched + 1))
+    [ "$stale_dispatched" -ge 1 ] && break
 
   else
     echo "Issue #$number: no branch found — resetting to ready (retry $next_retry/3)"
@@ -265,7 +268,7 @@ PROMPT
       --repo "$ORCHESTRATOR_REPO" \
       --body "Previous agent run failed before creating a branch (retry $next_retry/3). Resetting to **ready** for another attempt."
   fi
-done
+done < <(echo "$stale_issues" | jq -c '.[]')
 fi  # end of stale recovery block (skipped on label events)
 
 # ════════════════════════════════════════════════════════════════════════════
