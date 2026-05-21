@@ -34,6 +34,18 @@ branch_exists() {
 }
 
 # ════════════════════════════════════════════════════════════════════════════
+# STEP 0a — Close any open issues that are already labeled 'done'
+# (test agent sometimes hits spending cap after labeling but before closing)
+# ════════════════════════════════════════════════════════════════════════════
+gh issue list --repo "$ORCHESTRATOR_REPO" --label done --state open \
+  --json number --jq '.[].number' 2>/dev/null | \
+while read -r n; do
+  gh issue close "$n" --repo "$ORCHESTRATOR_REPO" \
+    --comment "Auto-closing: already marked done." 2>/dev/null || true
+  echo "Auto-closed done issue #$n"
+done
+
+# ════════════════════════════════════════════════════════════════════════════
 # STEP 0 — Clear expired cap-wait labels and re-trigger stalled stages
 # ════════════════════════════════════════════════════════════════════════════
 cap_wait_issues=$(gh issue list \
@@ -258,8 +270,18 @@ open_count=$(gh issue list \
 echo "Open issues (ready + in-progress): $open_count"
 
 if [ "${open_count:-99}" -lt "$BACKLOG_THRESHOLD" ]; then
-  echo "Backlog below threshold ($BACKLOG_THRESHOLD) — triggering backlog generation"
-  bash "$(dirname "$0")/generate-backlog.sh" || echo "Backlog generation dispatch failed (non-fatal)"
+  # Guard: skip if a backlog generation run is already in progress (prevents duplicates from concurrent orchestrator cycles)
+  backlog_running=$(GH_TOKEN="$DISPATCH_TOKEN" gh run list \
+    --repo "$ORCHESTRATOR_REPO" \
+    --workflow=generate-backlog.yml \
+    --status in_progress \
+    --json status --jq 'length' 2>/dev/null || echo "0")
+  if [ "${backlog_running:-0}" -gt 0 ]; then
+    echo "Backlog generation already in progress — skipping to prevent duplicate issues"
+  else
+    echo "Backlog below threshold ($BACKLOG_THRESHOLD) — triggering backlog generation"
+    bash "$(dirname "$0")/generate-backlog.sh" || echo "Backlog generation dispatch failed (non-fatal)"
+  fi
 fi
 
 # ════════════════════════════════════════════════════════════════════════════
