@@ -4,10 +4,10 @@ on:
   issues:
     types: [labeled]
   schedule:
-    - cron: '*/15 * * * *'
+    - cron: '*/5 * * * *'
 jobs:
   dispatch-tasks:
-    if: github.event_name != 'issues' || github.event.label.name == 'ready' || github.event.label.name == 'done'
+    if: github.event_name != 'issues' || github.event.label.name == 'ready' || github.event.label.name == 'done' || github.event.label.name == 'in-test'
     runs-on: ubuntu-latest
     concurrency:
       group: orchestrator
