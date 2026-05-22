@@ -301,41 +301,37 @@ if [ "${open_count:-99}" -lt "$BACKLOG_THRESHOLD" ]; then
 fi
 
 # ════════════════════════════════════════════════════════════════════════════
-# STEP 3 — Dispatch next ready task (sequential — one at a time)
+# STEP 3 — Dispatch next ready task
+# Dev slot (in-progress / code-review) is sequential — one at a time.
+# Test slot (in-test) is independent: a test running does NOT block dispatch.
 # ════════════════════════════════════════════════════════════════════════════
 echo "Checking pipeline state..."
 
-active_count=$(gh issue list \
+# Count issues occupying the dev slot only (not in-test)
+dev_active_count=$(gh issue list \
   --repo "$ORCHESTRATOR_REPO" \
   --state open \
   --json labels \
-  --jq '[.[] | select(.labels | map(.name) | any(. == "in-progress" or . == "code-review" or . == "in-test"))] | length' \
+  --jq '[.[] | select(.labels | map(.name) | any(. == "in-progress" or . == "code-review"))] | length' \
   2>/dev/null || echo "0")
 
-if [ "${active_count:-0}" -gt 0 ]; then
-  echo "Pipeline active ($active_count issue(s) in flight)"
+# Always check in-test issues: look for linked bug fixes and stale re-triggers
+in_test_issues=$(gh issue list \
+  --repo "$ORCHESTRATOR_REPO" \
+  --label in-test \
+  --state open \
+  --json number,labels,updatedAt \
+  --limit 20 \
+  2>/dev/null || echo "[]")
 
-  in_test_issues=$(gh issue list \
-    --repo "$ORCHESTRATOR_REPO" \
-    --label in-test \
-    --state open \
-    --json number,labels,updatedAt \
-    --limit 20 \
-    2>/dev/null || echo "[]")
+in_test_count=$(echo "$in_test_issues" | jq length)
 
-  in_test_count=$(echo "$in_test_issues" | jq length)
+linked_bugs=""
+retest_prs=""
+retest_issues=""
+retest_repo=""
 
-  if [ "$in_test_count" -eq 0 ]; then
-    echo "No in-test issues — waiting for in-progress/code-review work to complete."
-    exit 0
-  fi
-
-  # Check ALL in-test issues for linked ready bug fixes; also find stale ones to re-trigger
-  linked_bugs=""
-  retest_prs=""
-  retest_issues=""
-  retest_repo=""
-
+if [ "$in_test_count" -gt 0 ]; then
   while IFS= read -r in_test_entry; do
     in_test_number=$(echo "$in_test_entry" | jq -r '.number')
     echo "Checking issue #$in_test_number (in-test) for linked ready bugs..."
@@ -350,7 +346,7 @@ if [ "${active_count:-0}" -gt 0 ]; then
 
     cnt=$(echo "$linked" | jq length)
     if [ "$cnt" -gt 0 ]; then
-      echo "Found $cnt bug(s) linked to #$in_test_number — dispatching first"
+      echo "Found $cnt bug(s) linked to #$in_test_number — will dispatch first"
       linked_bugs="$linked"
       break
     fi
@@ -394,48 +390,60 @@ if [ "${active_count:-0}" -gt 0 ]; then
       fi
     fi
   done < <(echo "$in_test_issues" | jq -c '.[]')
+fi
 
+# Handle stale re-trigger (independent of dev slot)
+if [ -n "$retest_prs" ] && [ -z "$linked_bugs" ]; then
+  echo "Re-triggering stale tests: issues $retest_issues (PRs $retest_prs in $retest_repo)"
+  GH_TOKEN="$DISPATCH_TOKEN" gh workflow run test-agent.yml \
+    --repo "${owner}/${retest_repo}" --ref main \
+    -f pr_numbers="$retest_prs" \
+    -f target_repo="$retest_repo" \
+    -f orchestrator_issues="$retest_issues"
+  echo "Dispatched batched test re-trigger for issues $retest_issues"
+  # Don't exit — dev slot may still be free for an independent task below
+fi
+
+# Dev slot gate: if occupied, only linked bug fixes can proceed
+if [ "${dev_active_count:-0}" -gt 0 ]; then
+  echo "Dev slot occupied ($dev_active_count in-progress/code-review) — only linked bugs eligible"
   if [ -n "$linked_bugs" ]; then
     issues="$linked_bugs"
-  elif [ -n "$retest_prs" ]; then
-    echo "Re-triggering stale tests: issues $retest_issues (PRs $retest_prs in $retest_repo)"
-    GH_TOKEN="$DISPATCH_TOKEN" gh workflow run test-agent.yml \
-      --repo "${owner}/${retest_repo}" --ref main \
-      -f pr_numbers="$retest_prs" \
-      -f target_repo="$retest_repo" \
-      -f orchestrator_issues="$retest_issues"
-    echo "Dispatched batched test re-trigger for issues $retest_issues"
-    exit 0
   else
-    echo "All in-test issues have active linked work — waiting."
+    echo "No linked bugs — waiting for dev slot to clear."
     exit 0
   fi
 else
-  echo "Pipeline clear — picking next ready task..."
+  echo "Dev slot free — picking next task..."
+  if [ -n "$linked_bugs" ]; then
+    # Priority: linked bug fixes first
+    issues="$linked_bugs"
+  else
+    # No linked bugs — dispatch next independent ready task
+    ready_issues=$(gh issue list \
+      --repo "$ORCHESTRATOR_REPO" \
+      --label ready \
+      --state open \
+      --json number,title,body,labels \
+      --limit 10)
 
-  ready_issues=$(gh issue list \
-    --repo "$ORCHESTRATOR_REPO" \
-    --label ready \
-    --state open \
-    --json number,title,body,labels \
-    --limit 10)
+    failed_issues=$(gh issue list \
+      --repo "$ORCHESTRATOR_REPO" \
+      --label agent-failed \
+      --state open \
+      --json number,title,body,labels \
+      --limit 10)
 
-  failed_issues=$(gh issue list \
-    --repo "$ORCHESTRATOR_REPO" \
-    --label agent-failed \
-    --state open \
-    --json number,title,body,labels \
-    --limit 10)
-
-  issues=$(jq -s '
-    (.[0] + .[1]) | unique_by(.number) |
-    sort_by(
-      if (.labels | map(.name) | any(. == "priority:high")) then 0
-      elif (.labels | map(.name) | any(. == "agent-failed")) then 1
-      else 2
-      end
-    )
-  ' <(echo "$ready_issues") <(echo "$failed_issues"))
+    issues=$(jq -s '
+      (.[0] + .[1]) | unique_by(.number) |
+      sort_by(
+        if (.labels | map(.name) | any(. == "priority:high")) then 0
+        elif (.labels | map(.name) | any(. == "agent-failed")) then 1
+        else 2
+        end
+      )
+    ' <(echo "$ready_issues") <(echo "$failed_issues"))
+  fi
 fi
 
 count=$(echo "$issues" | jq length)
