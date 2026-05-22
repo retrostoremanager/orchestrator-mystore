@@ -208,7 +208,11 @@
   const ORCH  = 'retrostoremanager/orchestrator-mystore';
   const FN    = 'retrostoremanager/fn-mystore';
   const GH    = 'https://api.github.com';
-  const REFRESH_SEC = 180;
+  const REFRESH_SEC = 60;
+
+  // Optional GitHub token stored in localStorage — avoids the 60 req/hr unauthenticated limit.
+  // Set via the browser console: localStorage.setItem('gh_token', 'ghp_...')
+  function ghToken() { return localStorage.getItem('gh_token') || ''; }
 
   let timer, cdTimer, cd = REFRESH_SEC;
 
@@ -227,7 +231,15 @@
   }
 
   async function get(url) {
-    const r = await fetch(url, { headers: { Accept: 'application/vnd.github+json' } });
+    const headers = { Accept: 'application/vnd.github+json' };
+    const tok = ghToken();
+    if (tok) headers['Authorization'] = 'Bearer ' + tok;
+    const r = await fetch(url, { headers });
+    if (r.status === 403 || r.status === 429) {
+      const reset = r.headers.get('X-RateLimit-Reset');
+      const msg = reset ? ` (resets ${ago(new Date(reset * 1000))})` : '';
+      throw new Error('GitHub rate limit hit' + msg + ' — add a token: localStorage.setItem(\'gh_token\', \'ghp_...\')');
+    }
     if (!r.ok) throw new Error('GitHub API ' + r.status + ': ' + url.replace(GH,''));
     return r.json();
   }
@@ -265,9 +277,14 @@
     document.getElementById('countdown').textContent = '';
 
     try {
-      const [issues, claudeRuns, testRuns] = await Promise.all([
+      // Each agent has its own dedicated workflow — no branch guessing needed.
+      // claude-code.yml  = developer agent (all orchestrator dispatches use ref:main)
+      // code-review.yml  = code review agent (triggered on feature branches by PRs)
+      // test-agent.yml   = test agent
+      const [issues, claudeRuns, reviewRuns, testRuns] = await Promise.all([
         get(`${GH}/repos/${ORCH}/issues?state=open&per_page=100`),
-        get(`${GH}/repos/${FN}/actions/workflows/claude-code.yml/runs?per_page=15`),
+        get(`${GH}/repos/${FN}/actions/workflows/claude-code.yml/runs?per_page=10`),
+        get(`${GH}/repos/${FN}/actions/workflows/code-review.yml/runs?per_page=10`),
         get(`${GH}/repos/${FN}/actions/workflows/test-agent.yml/runs?per_page=10`),
       ]);
 
@@ -280,29 +297,11 @@
         (buckets[match || 'other'] ||= []).push(issue);
       });
 
-      // Active workflow runs
+      // Active workflow runs — direct 1:1 mapping to agent cards
       const isActive = r => r.status === 'in_progress' || r.status === 'queued';
-      const activeTestRun = testRuns.workflow_runs?.find(isActive);
-
-      // Split claude runs: dev (feature branches) vs review (development branch)
-      const allActive = claudeRuns.workflow_runs?.filter(isActive) ?? [];
-      let activeDevRun = null, activeRevRun = null;
-      for (const run of allActive) {
-        const branch = run.head_branch ?? '';
-        const issueMatch = branch.match(/^feature\/issue-(\d+)$/);
-        if (issueMatch) {
-          const num = parseInt(issueMatch[1]);
-          if (buckets['code-review'].some(i => i.number === num)) {
-            activeRevRun = activeRevRun || run;
-          } else {
-            activeDevRun = activeDevRun || run;
-          }
-        } else if (branch === 'development') {
-          activeRevRun = activeRevRun || run;
-        } else {
-          activeDevRun = activeDevRun || run;
-        }
-      }
+      const activeDevRun  = claudeRuns.workflow_runs?.find(isActive) ?? null;
+      const activeRevRun  = reviewRuns.workflow_runs?.find(isActive) ?? null;
+      const activeTestRun = testRuns.workflow_runs?.find(isActive)   ?? null;
 
       // Determine badge status
       const devStatus  = activeDevRun  ? activeDevRun.status  : (buckets['in-progress'].length ? 'queued' : 'idle');
