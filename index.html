@@ -278,22 +278,18 @@
     document.getElementById('countdown').textContent = '';
 
     try {
-      // Fetch runs from both fn-mystore and web-mystore — work can be in either repo.
-      const [issues, fnClaudeRuns, webClaudeRuns, fnReviewRuns, webReviewRuns, fnTestRuns, webTestRuns] = await Promise.all([
+      // 3 calls total (vs 7) — fetch all runs per repo and filter client-side by workflow path.
+      const [issues, fnRuns, webRuns] = await Promise.all([
         get(`${GH}/repos/${ORCH}/issues?state=open&per_page=100`),
-        get(`${GH}/repos/${FN}/actions/workflows/claude-code.yml/runs?per_page=10`),
-        get(`${GH}/repos/${WEB}/actions/workflows/claude-code.yml/runs?per_page=10`),
-        get(`${GH}/repos/${FN}/actions/workflows/code-review.yml/runs?per_page=10`),
-        get(`${GH}/repos/${WEB}/actions/workflows/code-review.yml/runs?per_page=10`),
-        get(`${GH}/repos/${FN}/actions/workflows/test-agent.yml/runs?per_page=10`),
-        get(`${GH}/repos/${WEB}/actions/workflows/test-agent.yml/runs?per_page=10`),
+        get(`${GH}/repos/${FN}/actions/runs?per_page=20`),
+        get(`${GH}/repos/${WEB}/actions/runs?per_page=20`),
       ]);
 
-      // Merge runs from both repos — pick the most recently active one across both
-      const mergeRuns = (a, b) => ({ workflow_runs: [...(a.workflow_runs||[]), ...(b.workflow_runs||[])] });
-      const claudeRuns = mergeRuns(fnClaudeRuns, webClaudeRuns);
-      const reviewRuns = mergeRuns(fnReviewRuns, webReviewRuns);
-      const testRuns   = mergeRuns(fnTestRuns,   webTestRuns);
+      const allRuns = [...(fnRuns.workflow_runs||[]), ...(webRuns.workflow_runs||[])];
+      const runsFor = path => ({ workflow_runs: allRuns.filter(r => r.path === path || r.path?.endsWith('/' + path)) });
+      const claudeRuns = runsFor('claude-code.yml');
+      const reviewRuns = runsFor('code-review.yml');
+      const testRuns   = runsFor('test-agent.yml');
 
       // Group issues by first matching pipeline label
       const buckets = { 'in-progress':[], 'code-review':[], 'in-test':[], 'cap-wait':[], 'ready':[], 'other':[] };
