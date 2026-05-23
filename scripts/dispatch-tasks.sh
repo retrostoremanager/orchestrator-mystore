@@ -89,7 +89,7 @@ echo "$cap_wait_issues" | jq -c '.[]' | while read -r issue; do
         2>/dev/null || true)
       if [ -n "$pr_number" ] && [ "$pr_number" != "null" ]; then
         GH_TOKEN="$DISPATCH_TOKEN" gh workflow run test-agent.yml \
-          --repo "${owner}/${target_repo}" --ref main \
+          --repo "${owner}/fn-mystore" --ref main \
           -f pr_numbers="$pr_number" \
           -f target_repo="$target_repo" \
           -f orchestrator_issues="$number"
@@ -360,7 +360,7 @@ if [ "$in_test_count" -gt 0 ]; then
     target_repo_raw=$(echo "$in_test_entry" | jq -r '[.labels[].name | select(startswith("repo:"))] | first // empty' | sed 's/repo://')
     if [ -n "$target_repo_raw" ]; then
       test_active=$(GH_TOKEN="$DISPATCH_TOKEN" gh run list \
-        --repo "${owner}/${target_repo_raw}" \
+        --repo "${owner}/fn-mystore" \
         --workflow=test-agent.yml \
         --status in_progress \
         --json status --jq 'length' 2>/dev/null || echo "0")
@@ -396,7 +396,7 @@ fi
 if [ -n "$retest_prs" ] && [ -z "$linked_bugs" ]; then
   echo "Re-triggering stale tests: issues $retest_issues (PRs $retest_prs in $retest_repo)"
   GH_TOKEN="$DISPATCH_TOKEN" gh workflow run test-agent.yml \
-    --repo "${owner}/${retest_repo}" --ref main \
+    --repo "${owner}/fn-mystore" --ref main \
     -f pr_numbers="$retest_prs" \
     -f target_repo="$retest_repo" \
     -f orchestrator_issues="$retest_issues"
