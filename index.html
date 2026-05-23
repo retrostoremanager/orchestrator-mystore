@@ -300,23 +300,36 @@
         (buckets[match || 'other'] ||= []).push(issue);
       });
 
-      // Active workflow runs — direct 1:1 mapping to agent cards
+      // Active workflow runs
       const isActive = r => r.status === 'in_progress' || r.status === 'queued';
-      const activeDevRun  = claudeRuns.workflow_runs?.find(isActive) ?? null;
-      const activeRevRun  = reviewRuns.workflow_runs?.find(isActive) ?? null;
-      const activeTestRun = testRuns.workflow_runs?.find(isActive)   ?? null;
+      const activeClaudeRun = claudeRuns.workflow_runs?.find(isActive) ?? null;
+      const activeRevRun    = reviewRuns.workflow_runs?.find(isActive) ?? null;
+      const activeTestRun   = testRuns.workflow_runs?.find(isActive)   ?? null;
 
-      // Determine badge status
-      const devStatus  = activeDevRun  ? activeDevRun.status  : (buckets['in-progress'].length ? 'queued' : 'idle');
-      const revStatus  = activeRevRun  ? activeRevRun.status  : (buckets['code-review'].length  ? 'queued' : 'idle');
-      const tstStatus  = activeTestRun ? activeTestRun.status : (buckets['in-test'].length       ? 'queued' : 'idle');
+      // Dev agent uses claude-code.yml — but so does the review agent.
+      // Only treat a claude-code.yml run as a dev run when there's an in-progress issue.
+      // When there's a code-review issue instead, the run belongs to the review agent.
+      const hasInProgress  = buckets['in-progress'].length > 0;
+      const hasCodeReview  = buckets['code-review'].length  > 0;
+      const activeDevRun   = (activeClaudeRun && hasInProgress)  ? activeClaudeRun : null;
+      const activeRevAgent = (activeClaudeRun && hasCodeReview)  ? activeClaudeRun : activeRevRun;
+
+      const devStatus = activeDevRun
+        ? activeDevRun.status
+        : (hasInProgress ? 'queued' : 'idle');
+      const revStatus = activeRevAgent
+        ? activeRevAgent.status
+        : (hasCodeReview ? 'queued' : 'idle');
+      const tstStatus = activeTestRun
+        ? activeTestRun.status
+        : (buckets['in-test'].length ? 'queued' : 'idle');
 
       setBadge('dev-badge', devStatus === 'in_progress' ? 'running' : devStatus);
       setBadge('rev-badge', revStatus === 'in_progress' ? 'running' : revStatus);
       setBadge('tst-badge', tstStatus === 'in_progress' ? 'running' : tstStatus);
 
       renderAgentBody(document.getElementById('dev-body'), buckets['in-progress'], activeDevRun?.html_url);
-      renderAgentBody(document.getElementById('rev-body'), buckets['code-review'],  activeRevRun?.html_url);
+      renderAgentBody(document.getElementById('rev-body'), buckets['code-review'],  activeRevAgent?.html_url);
       renderAgentBody(document.getElementById('tst-body'), buckets['in-test'],      activeTestRun?.html_url);
 
       // Render queue
