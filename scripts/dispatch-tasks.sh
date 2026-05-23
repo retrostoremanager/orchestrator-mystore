@@ -12,7 +12,7 @@ STALE_THRESHOLD_SECONDS=21600  # 6 hours
 
 owner=$(echo "$ORCHESTRATOR_REPO" | cut -d'/' -f1)
 
-# ── Helper: check if an open PR already references an issue ──────────────────
+# â”€â”€ Helper: check if an open PR already references an issue â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
 pr_exists_for_issue() {
   local target_repo="$1" issue_number="$2"
   local count
@@ -25,7 +25,7 @@ pr_exists_for_issue() {
   [ "${count:-0}" -gt 0 ]
 }
 
-# ── Helper: check if a branch exists in a target repo ───────────────────────
+# â”€â”€ Helper: check if a branch exists in a target repo â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
 branch_exists() {
   local target_repo="$1" branch="$2"
   GH_TOKEN="$DISPATCH_TOKEN" gh api \
@@ -33,10 +33,10 @@ branch_exists() {
     --silent 2>/dev/null
 }
 
-# ════════════════════════════════════════════════════════════════════════════
-# STEP 0a — Close any open issues that are already labeled 'done'
+# â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•
+# STEP 0a â€” Close any open issues that are already labeled 'done'
 # (test agent sometimes hits spending cap after labeling but before closing)
-# ════════════════════════════════════════════════════════════════════════════
+# â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•
 gh issue list --repo "$ORCHESTRATOR_REPO" --label done --state open \
   --json number --jq '.[].number' 2>/dev/null | \
 while read -r n; do
@@ -45,9 +45,9 @@ while read -r n; do
   echo "Auto-closed done issue #$n"
 done
 
-# ════════════════════════════════════════════════════════════════════════════
-# STEP 0 — Clear expired cap-wait labels and re-trigger stalled stages
-# ════════════════════════════════════════════════════════════════════════════
+# â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•
+# STEP 0 â€” Clear expired cap-wait labels and re-trigger stalled stages
+# â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•
 cap_wait_issues=$(gh issue list \
   --repo "$ORCHESTRATOR_REPO" \
   --label cap-wait \
@@ -68,12 +68,12 @@ echo "$cap_wait_issues" | jq -c '.[]' | while read -r issue; do
     current_epoch=$(date +%s)
     if [ "$current_epoch" -lt "$reset_epoch" ]; then
       remaining=$(( (reset_epoch - current_epoch) / 60 ))
-      echo "Issue #$number: cap-wait active for ${remaining}m more — skipping"
+      echo "Issue #$number: cap-wait active for ${remaining}m more â€” skipping"
       continue
     fi
   fi
 
-  echo "Issue #$number: cap-wait expired — clearing label"
+  echo "Issue #$number: cap-wait expired â€” clearing label"
   gh issue edit "$number" --repo "$ORCHESTRATOR_REPO" --remove-label "cap-wait"
 
   # If in-test, re-trigger the test agent (in-progress will be handled by STEP 1 stale recovery)
@@ -95,7 +95,7 @@ echo "$cap_wait_issues" | jq -c '.[]' | while read -r issue; do
           -f orchestrator_issues="$number"
         echo "Re-triggered test agent for issue #$number (PR #$pr_number)"
       else
-        echo "Issue #$number: in-test but no merged PR found — skipping test re-trigger"
+        echo "Issue #$number: in-test but no merged PR found â€” skipping test re-trigger"
       fi
     fi
   fi
@@ -119,7 +119,7 @@ echo "$cap_wait_issues" | jq -c '.[]' | while read -r issue; do
           -f head_branch="$head_branch"
         echo "Re-triggered code review for issue #$number (PR #$pr_number)"
       else
-        echo "Issue #$number: code-review but no open PR found — resetting to in-progress"
+        echo "Issue #$number: code-review but no open PR found â€” resetting to in-progress"
         gh issue edit "$number" --repo "$ORCHESTRATOR_REPO" \
           --remove-label "code-review" --add-label "in-progress"
       fi
@@ -127,13 +127,13 @@ echo "$cap_wait_issues" | jq -c '.[]' | while read -r issue; do
   fi
 done
 
-# ════════════════════════════════════════════════════════════════════════════
-# STEP 1 — Recover stale in-progress issues
-# Skip on label events — those fire instantly and stale recovery adds no value.
+# â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•
+# STEP 1 â€” Recover stale in-progress issues
+# Skip on label events â€” those fire instantly and stale recovery adds no value.
 # Only run on schedule (every 6h) or manual workflow_dispatch.
-# ════════════════════════════════════════════════════════════════════════════
+# â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•
 if [ "$TRIGGER_EVENT" = "issues" ]; then
-  echo "Triggered by label event — skipping stale recovery (only runs on schedule)."
+  echo "Triggered by label event â€” skipping stale recovery (only runs on schedule)."
 else
   echo "Checking for stale in-progress issues..."
 
@@ -160,20 +160,20 @@ while IFS= read -r issue; do
   # Skip if waiting for spending cap to reset
   has_cap_wait=$(echo "$issue" | jq -r '[.labels[].name] | any(. == "cap-wait")')
   if [ "$has_cap_wait" = "true" ]; then
-    echo "Issue #$number has active cap-wait — skipping stale recovery"
+    echo "Issue #$number has active cap-wait â€” skipping stale recovery"
     continue
   fi
 
-  # Skip if already marked done (contradictory labels — remove in-progress and move on)
+  # Skip if already marked done (contradictory labels â€” remove in-progress and move on)
   has_done=$(echo "$issue" | jq -r '[.labels[].name] | any(. == "done")')
   if [ "$has_done" = "true" ]; then
-    echo "Issue #$number already has done label — removing in-progress"
+    echo "Issue #$number already has done label â€” removing in-progress"
     gh issue edit "$number" --repo "$ORCHESTRATOR_REPO" --remove-label in-progress
     continue
   fi
 
   # Calculate age in seconds.
-  # Use a shorter threshold when no agent runs are active — means the issue is
+  # Use a shorter threshold when no agent runs are active â€” means the issue is
   # genuinely abandoned (cap hit, network error) rather than legitimately running.
   # This avoids the 6h wait for issues that are clearly stuck with no active agent.
   age=$(( $(date +%s) - $(date -d "$updated_at" +%s) ))
@@ -183,9 +183,9 @@ while IFS= read -r issue; do
     --status in_progress \
     --json status --jq 'length' 2>/dev/null || echo "0")
   if [ "${active_runs:-0}" -eq 0 ]; then
-    effective_threshold=5400  # 90 min — no agent running, so this is definitely abandoned
+    effective_threshold=5400  # 90 min â€” no agent running, so this is definitely abandoned
   else
-    effective_threshold="$STALE_THRESHOLD_SECONDS"  # 6h — agent running, give it time
+    effective_threshold="$STALE_THRESHOLD_SECONDS"  # 6h â€” agent running, give it time
   fi
   if [ "$age" -lt "$effective_threshold" ]; then
     echo "Issue #$number has been in-progress for $((age/60))m (threshold: $((effective_threshold/60))m, active runs: ${active_runs:-0}) - skipping"
@@ -204,23 +204,23 @@ while IFS= read -r issue; do
   retry_count=$(echo "$issue" | jq -r '[.labels[].name | select(startswith("retry-"))] | length')
   next_retry=$((retry_count + 1))
 
-  # Hard stop at 3 retries — mark agent-failed; STEP 3 will retry it at lower priority
+  # Hard stop at 3 retries â€” mark agent-failed; STEP 3 will retry it at lower priority
   if [ "$retry_count" -ge 3 ]; then
-    echo "Issue #$number: hit retry cap ($retry_count retries) — marking agent-failed"
+    echo "Issue #$number: hit retry cap ($retry_count retries) â€” marking agent-failed"
     gh issue edit "$number" \
       --repo "$ORCHESTRATOR_REPO" \
       --remove-label in-progress \
       --add-label agent-failed
     gh issue comment "$number" \
       --repo "$ORCHESTRATOR_REPO" \
-      --body "Agent has failed **$retry_count** times on this issue (likely quota exhaustion). Marking as **agent-failed** — will be retried automatically at lower priority once quota is restored."
+      --body "Agent has failed **$retry_count** times on this issue (likely quota exhaustion). Marking as **agent-failed** â€” will be retried automatically at lower priority once quota is restored."
     continue
   fi
 
   branch="feature/issue-${number}"
 
   if branch_exists "$target_repo" "$branch"; then
-    echo "Issue #$number: branch $branch exists — dispatching resume agent (retry $next_retry/3)"
+    echo "Issue #$number: branch $branch exists â€” dispatching resume agent (retry $next_retry/3)"
 
     gh issue edit "$number" \
       --repo "$ORCHESTRATOR_REPO" \
@@ -237,10 +237,10 @@ CONTEXT: A previous agent started this task but did not finish (likely hit a spe
 Branch ${branch} already exists in this repo with partial work.
 
 Resume instructions:
-1. Check out the existing branch ${branch} — do NOT create a new branch.
+1. Check out the existing branch ${branch} â€” do NOT create a new branch.
 2. Run: git log origin/development..HEAD --oneline   to see what was already committed.
 3. Run: dotnet build MyStore.sln   to check current build state.
-4. If the task involves SQL queries: read the relevant schema from retrostoremanager/dbproj-mystore (development branch, PostgreSQL/ directory) — exact column names are there. Use: GH_TOKEN="\$GH_DISPATCH_TOKEN" gh api "repos/retrostoremanager/dbproj-mystore/contents/PostgreSQL/<file>?ref=development" --jq '.content' | base64 -d
+4. If the task involves SQL queries: read the relevant schema from retrostoremanager/dbproj-mystore (development branch, PostgreSQL/ directory) â€” exact column names are there. Use: GH_TOKEN="\$GH_DISPATCH_TOKEN" gh api "repos/retrostoremanager/dbproj-mystore/contents/PostgreSQL/<file>?ref=development" --jq '.content' | base64 -d
 5. Review the acceptance criteria above and complete any remaining items.
 6. Run: dotnet test MyStore.Tests/MyStore.Tests.csproj
 7. If all tests pass, open a pull request targeting the development branch.
@@ -258,7 +258,7 @@ PROMPT
     [ "$stale_dispatched" -ge 1 ] && break
 
   else
-    echo "Issue #$number: no branch found — resetting to ready (retry $next_retry/3)"
+    echo "Issue #$number: no branch found â€” resetting to ready (retry $next_retry/3)"
     gh issue edit "$number" \
       --repo "$ORCHESTRATOR_REPO" \
       --remove-label in-progress \
@@ -271,9 +271,9 @@ PROMPT
 done < <(echo "$stale_issues" | jq -c '.[]')
 fi  # end of stale recovery block (skipped on label events)
 
-# ════════════════════════════════════════════════════════════════════════════
-# STEP 2 — Replenish backlog if running low
-# ════════════════════════════════════════════════════════════════════════════
+# â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•
+# STEP 2 â€” Replenish backlog if running low
+# â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•
 BACKLOG_THRESHOLD=3
 
 open_count=$(gh issue list \
@@ -293,18 +293,18 @@ if [ "${open_count:-99}" -lt "$BACKLOG_THRESHOLD" ]; then
     --status in_progress \
     --json status --jq 'length' 2>/dev/null || echo "0")
   if [ "${backlog_running:-0}" -gt 0 ]; then
-    echo "Backlog generation already in progress — skipping to prevent duplicate issues"
+    echo "Backlog generation already in progress â€” skipping to prevent duplicate issues"
   else
-    echo "Backlog below threshold ($BACKLOG_THRESHOLD) — triggering backlog generation"
+    echo "Backlog below threshold ($BACKLOG_THRESHOLD) â€” triggering backlog generation"
     bash "$(dirname "$0")/generate-backlog.sh" || echo "Backlog generation dispatch failed (non-fatal)"
   fi
 fi
 
-# ════════════════════════════════════════════════════════════════════════════
-# STEP 3 — Dispatch next ready task
-# Dev slot (in-progress / code-review) is sequential — one at a time.
+# â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•
+# STEP 3 â€” Dispatch next ready task
+# Dev slot (in-progress only) â€” code-review runs in parallel on its own agent.
 # Test slot (in-test) is independent: a test running does NOT block dispatch.
-# ════════════════════════════════════════════════════════════════════════════
+# â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•
 echo "Checking pipeline state..."
 
 # Count issues occupying the dev slot only (not in-test)
@@ -312,7 +312,7 @@ dev_active_count=$(gh issue list \
   --repo "$ORCHESTRATOR_REPO" \
   --state open \
   --json labels \
-  --jq '[.[] | select(.labels | map(.name) | any(. == "in-progress" or . == "code-review"))] | length' \
+  --jq '[.[] | select(.labels | map(.name) | any(. == "in-progress"))] | length' \
   2>/dev/null || echo "0")
 
 # Always check in-test issues: look for linked bug fixes and stale re-triggers
@@ -346,7 +346,7 @@ if [ "$in_test_count" -gt 0 ]; then
 
     cnt=$(echo "$linked" | jq length)
     if [ "$cnt" -gt 0 ]; then
-      echo "Found $cnt bug(s) linked to #$in_test_number — will dispatch first"
+      echo "Found $cnt bug(s) linked to #$in_test_number â€” will dispatch first"
       linked_bugs="$linked"
       break
     fi
@@ -385,7 +385,7 @@ if [ "$in_test_count" -gt 0 ]; then
             retest_prs="${retest_prs},${pr}"
             retest_issues="${retest_issues},${in_test_number}"
           fi
-          echo "Issue #$in_test_number is stale ($((age/60))m) — will re-trigger test (PR #$pr)"
+          echo "Issue #$in_test_number is stale ($((age/60))m) â€” will re-trigger test (PR #$pr)"
         fi
       fi
     fi
@@ -401,25 +401,25 @@ if [ -n "$retest_prs" ] && [ -z "$linked_bugs" ]; then
     -f target_repo="$retest_repo" \
     -f orchestrator_issues="$retest_issues"
   echo "Dispatched batched test re-trigger for issues $retest_issues"
-  # Don't exit — dev slot may still be free for an independent task below
+  # Don't exit â€” dev slot may still be free for an independent task below
 fi
 
 # Dev slot gate: if occupied, only linked bug fixes can proceed
 if [ "${dev_active_count:-0}" -gt 0 ]; then
-  echo "Dev slot occupied ($dev_active_count in-progress/code-review) — only linked bugs eligible"
+  echo "Dev slot occupied ($dev_active_count in-progress) â€” only linked bugs eligible"
   if [ -n "$linked_bugs" ]; then
     issues="$linked_bugs"
   else
-    echo "No linked bugs — waiting for dev slot to clear."
+    echo "No linked bugs â€” waiting for dev slot to clear."
     exit 0
   fi
 else
-  echo "Dev slot free — picking next task..."
+  echo "Dev slot free â€” picking next task..."
   if [ -n "$linked_bugs" ]; then
     # Priority: linked bug fixes first
     issues="$linked_bugs"
   else
-    # No linked bugs — dispatch next independent ready task
+    # No linked bugs â€” dispatch next independent ready task
     ready_issues=$(gh issue list \
       --repo "$ORCHESTRATOR_REPO" \
       --label ready \
@@ -490,7 +490,7 @@ echo "$issues" | jq -c '.[]' | while read -r issue; do
 
   if [ "$is_bug" = "true" ]; then
     task_type="Bug fix"
-    task_note="This is a confirmed bug found by the QA testing agent after deployment to dev. Fix the specific issue described — do not add unrelated changes."
+    task_note="This is a confirmed bug found by the QA testing agent after deployment to dev. Fix the specific issue described â€” do not add unrelated changes."
   else
     task_type="Feature task"
     task_note=""
@@ -507,7 +507,7 @@ ${task_note}
 
 Instructions:
 1. Read CLAUDE.md for coding standards and file map before making any changes.
-2. If the task involves database queries or SQL: read the relevant schema file(s) from retrostoremanager/dbproj-mystore (development branch, PostgreSQL/ directory) before writing any SQL — exact column names are there. Use: GH_TOKEN="\$GH_DISPATCH_TOKEN" gh api "repos/retrostoremanager/dbproj-mystore/contents/PostgreSQL/<file>?ref=development" --jq '.content' | base64 -d
+2. If the task involves database queries or SQL: read the relevant schema file(s) from retrostoremanager/dbproj-mystore (development branch, PostgreSQL/ directory) before writing any SQL â€” exact column names are there. Use: GH_TOKEN="\$GH_DISPATCH_TOKEN" gh api "repos/retrostoremanager/dbproj-mystore/contents/PostgreSQL/<file>?ref=development" --jq '.content' | base64 -d
 3. Create a feature branch feature/issue-${number} off the development branch.
 4. Implement the task following all project conventions.
 5. Run: ${build_cmd}
