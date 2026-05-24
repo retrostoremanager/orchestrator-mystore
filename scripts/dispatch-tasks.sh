@@ -497,6 +497,8 @@ echo "$issues" | jq -c '.[]' | while read -r issue; do
 
   if [ "$target_repo" = "fn-mystore" ]; then
     build_cmd="dotnet build MyStore.sln && dotnet test MyStore.Tests/MyStore.Tests.csproj"
+  elif [ "$target_repo" = "dbproj-mystore" ]; then
+    build_cmd="echo 'SQL migration - no build step required'"
   else
     build_cmd="npm install && npm run build && npm test -- --run"
   fi
