@@ -352,6 +352,19 @@ if [ "$in_test_count" -gt 0 ]; then
     fi
 
     echo "No linked ready bugs for #$in_test_number"
+    # Skip re-trigger if any open bugs are linked to this issue (not just ready ones).
+    # The parent issue cannot pass E2E tests while its bugs are unresolved.
+    open_linked_bug_cnt=$(gh issue list \
+      --repo "$ORCHESTRATOR_REPO" \
+      --label bug --state open \
+      --json number,body \
+      --limit 20 \
+      --jq "[.[] | select(.body | contains(\"orchestrator-mystore#${in_test_number}\"))] | length" \
+      2>/dev/null || echo "0")
+    if [ "${open_linked_bug_cnt:-0}" -gt 0 ]; then
+      echo "Issue #$in_test_number has ${open_linked_bug_cnt} open linked bug(s) -- skipping re-trigger until bugs are resolved"
+      continue
+    fi
 
     # Check if this in-test issue is stale and should have its test re-triggered.
     # Use shorter threshold when no test agent is active (issue is abandoned, not running).
