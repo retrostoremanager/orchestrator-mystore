@@ -482,7 +482,7 @@ echo "$issues" | jq -c '.[]' | while read -r issue; do
   is_priority=$(echo "$issue" | jq -r '[.labels[].name] | any(. == "priority:high")')
   is_failed=$(echo "$issue" | jq -r '[.labels[].name] | any(. == "agent-failed")')
 
-  target_repo=$(echo "$issue" | jq -r '.labels[].name' | grep '^repo:' | head -1 | sed 's/repo://')
+  target_repo=$(echo "$issue" | jq -r '.labels[].name' | grep '^repo:' | head -1 | sed 's/repo://' || true)
 
   if [ -z "$target_repo" ]; then
     echo "Issue #$number has no repo: label - skipping"
