@@ -50,6 +50,18 @@
       transition: background 0.15s;
     }
     .refresh-btn:hover { background: #21262d; }
+    .token-btn {
+      background: var(--surface);
+      border: 1px solid var(--border);
+      color: var(--muted);
+      padding: 6px 14px;
+      border-radius: 6px;
+      cursor: pointer;
+      font-size: 13px;
+      transition: background 0.15s, color 0.15s, border-color 0.15s;
+    }
+    .token-btn:hover { background: #21262d; }
+    .token-btn.has-token { color: var(--green); border-color: rgba(63,185,80,0.4); }
     .agents-grid {
       display: grid;
       grid-template-columns: repeat(3, 1fr);
@@ -169,6 +181,7 @@
   </div>
   <div class="header-right">
     <span class="meta" id="countdown"></span>
+    <button class="token-btn" id="token-btn" onclick="setToken()">Set Token</button>
     <button class="refresh-btn" onclick="doRefresh()">↻ Refresh</button>
   </div>
 </header>
@@ -211,9 +224,34 @@
   const GH    = 'https://api.github.com';
   const REFRESH_SEC = 180;
 
-  // Optional GitHub token stored in localStorage — avoids the 60 req/hr unauthenticated limit.
-  // Set via the browser console: localStorage.setItem('gh_token', 'ghp_...')
   function ghToken() { return localStorage.getItem('gh_token') || ''; }
+
+  function updateTokenBtn() {
+    const btn = document.getElementById('token-btn');
+    if (ghToken()) {
+      btn.textContent = 'Token ✓';
+      btn.classList.add('has-token');
+    } else {
+      btn.textContent = 'Set Token';
+      btn.classList.remove('has-token');
+    }
+  }
+
+  function setToken() {
+    const current = ghToken();
+    const val = prompt(
+      current ? 'Update GitHub token (leave blank to clear):' : 'Enter GitHub token (ghp_…):',
+      current
+    );
+    if (val === null) return;
+    if (val.trim()) {
+      localStorage.setItem('gh_token', val.trim());
+    } else {
+      localStorage.removeItem('gh_token');
+    }
+    updateTokenBtn();
+    doRefresh();
+  }
 
   let timer, cdTimer, cd = REFRESH_SEC;
 
@@ -371,6 +409,7 @@
     }, 1000);
   }
 
+  updateTokenBtn();
   doRefresh();
 </script>
 </body>
