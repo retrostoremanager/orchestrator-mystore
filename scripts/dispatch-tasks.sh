@@ -129,13 +129,8 @@ done
 
 # â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•
 # STEP 1 â€” Recover stale in-progress issues
-# Skip on label events â€” those fire instantly and stale recovery adds no value.
-# Only run on schedule (every 6h) or manual workflow_dispatch.
+# Runs on every trigger — age threshold prevents premature recovery.
 # â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•
-if [ "$TRIGGER_EVENT" = "issues" ]; then
-  echo "Triggered by label event â€” skipping stale recovery (only runs on schedule)."
-else
-  echo "Checking for stale in-progress issues..."
 
 stale_issues=$(gh issue list \
   --repo "$ORCHESTRATOR_REPO" \
@@ -269,7 +264,6 @@ PROMPT
       --body "Previous agent run failed before creating a branch (retry $next_retry/3). Resetting to **ready** for another attempt."
   fi
 done < <(echo "$stale_issues" | jq -c '.[]')
-fi  # end of stale recovery block (skipped on label events)
 
 # â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•
 # STEP 2 â€” Replenish backlog if running low
