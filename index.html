@@ -287,13 +287,10 @@
       return;
     }
 
-    const current = s === 'active'
-      ? sessionStorage.getItem('gh_token_cache')
-      : (localStorage.getItem('gh_token') || '');
-    const msg = s === 'active' ? 'Update GitHub token (blank to remove):' :
-                s === 'plain'  ? 'Re-enter token to encrypt it:'          :
+    const msg = s === 'active' ? 'Enter new GitHub token (blank to remove):' :
+                s === 'plain'  ? 'Re-enter token to encrypt it:'            :
                                  'Enter GitHub token (ghp_…):';
-    const token = prompt(msg, current);
+    const token = prompt(msg);
     if (token === null) return;
 
     if (!token.trim()) {
