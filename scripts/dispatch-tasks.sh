@@ -100,28 +100,35 @@ echo "$cap_wait_issues" | jq -c '.[]' | while read -r issue; do
     fi
   fi
 
-  # If code-review, re-trigger the code review workflow
-  has_code_review=$(echo "$issue" | jq -r '[.labels[].name] | any(. == "code-review")')
-  if [ "$has_code_review" = "true" ]; then
-    target_repo=$(echo "$issue" | jq -r '[.labels[].name | select(startswith("repo:"))] | first // empty' | sed 's/repo://')
-    if [ -n "$target_repo" ]; then
-      pr_data=$(GH_TOKEN="$DISPATCH_TOKEN" gh pr list \
-        --repo "${owner}/${target_repo}" --state open \
-        --json number,headRefName,body \
-        --jq "[.[] | select(.body | contains(\"orchestrator-mystore#${number}\"))] | .[0] // empty" \
-        2>/dev/null || echo "")
-      if [ -n "$pr_data" ] && [ "$pr_data" != "null" ] && [ "$pr_data" != "" ]; then
-        pr_number=$(echo "$pr_data" | jq -r '.number')
-        head_branch=$(echo "$pr_data" | jq -r '.headRefName')
-        GH_TOKEN="$DISPATCH_TOKEN" gh workflow run code-review.yml \
-          --repo "${owner}/${target_repo}" --ref main \
-          -f pr_number="$pr_number" \
-          -f head_branch="$head_branch"
-        echo "Re-triggered code review for issue #$number (PR #$pr_number)"
-      else
-        echo "Issue #$number: code-review but no open PR found â€” resetting to in-progress"
-        gh issue edit "$number" --repo "$ORCHESTRATOR_REPO" \
-          --remove-label "code-review" --add-label "in-progress"
+  # If code-review, re-trigger only if stale (>20 min) — avoids racing with the dev agent's
+  # immediate trigger-review.sh dispatch which fires right after build+test completes.
+  has_code_review=$(echo “$issue” | jq -r '[.labels[].name] | any(. == “code-review”)')
+  if [ “$has_code_review” = “true” ]; then
+    updated_at=$(echo “$issue” | jq -r '.updatedAt')
+    age=$(( $(date +%s) - $(date -d “$updated_at” +%s) ))
+    if [ “$age” -lt 1200 ]; then
+      echo “Issue #$number: code-review but only ${age}s old — skipping re-trigger (threshold 1200s)”
+    else
+      target_repo=$(echo “$issue” | jq -r '[.labels[].name | select(startswith(“repo:”))] | first // empty' | sed 's/repo://')
+      if [ -n “$target_repo” ]; then
+        pr_data=$(GH_TOKEN=”$DISPATCH_TOKEN” gh pr list \
+          --repo “${owner}/${target_repo}” --state open \
+          --json number,headRefName,body \
+          --jq “[.[] | select(.body | contains(\”orchestrator-mystore#${number}\”))] | .[0] // empty” \
+          2>/dev/null || echo “”)
+        if [ -n “$pr_data” ] && [ “$pr_data” != “null” ] && [ “$pr_data” != “” ]; then
+          pr_number=$(echo “$pr_data” | jq -r '.number')
+          head_branch=$(echo “$pr_data” | jq -r '.headRefName')
+          GH_TOKEN=”$DISPATCH_TOKEN” gh workflow run code-review.yml \
+            --repo “${owner}/${target_repo}” --ref main \
+            -f pr_number=”$pr_number” \
+            -f head_branch=”$head_branch”
+          echo “Re-triggered code review for issue #$number (PR #$pr_number, age ${age}s)”
+        else
+          echo “Issue #$number: code-review but no open PR found — resetting to in-progress”
+          gh issue edit “$number” --repo “$ORCHESTRATOR_REPO” \
+            --remove-label “code-review” --add-label “in-progress”
+        fi
       fi
     fi
   fi
