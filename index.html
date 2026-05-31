@@ -170,6 +170,50 @@
     .empty-dash { color: var(--muted); font-size: 13px; }
     .error-txt { color: var(--red); font-size: 13px; }
     .loading-txt { color: var(--muted); font-size: 13px; }
+    .done-card {
+      background: var(--surface);
+      border: 1px solid var(--border);
+      border-radius: 8px;
+      padding: 20px;
+      margin-top: 24px;
+    }
+    .done-header {
+      display: flex;
+      align-items: center;
+      justify-content: space-between;
+      margin-bottom: 16px;
+    }
+    .done-title {
+      font-size: 11px;
+      font-weight: 600;
+      text-transform: uppercase;
+      letter-spacing: 0.8px;
+      color: var(--muted);
+    }
+    .done-count {
+      font-size: 12px;
+      font-weight: 600;
+      color: var(--green);
+      background: rgba(63,185,80,0.12);
+      border: 1px solid rgba(63,185,80,0.25);
+      border-radius: 10px;
+      padding: 1px 10px;
+    }
+    .done-list { display: flex; flex-direction: column; gap: 0; }
+    .done-row {
+      display: flex;
+      align-items: baseline;
+      gap: 12px;
+      padding: 9px 0;
+      border-bottom: 1px solid var(--border);
+    }
+    .done-row:last-child { border-bottom: none; }
+    .done-check { color: var(--green); font-size: 13px; flex-shrink: 0; line-height: 1; margin-top: 1px; }
+    .done-body { flex: 1; min-width: 0; }
+    .done-issue-num { font-size: 12px; color: var(--muted); }
+    .done-issue-title { font-size: 13px; line-height: 1.4; }
+    .done-time { font-size: 11px; color: var(--muted); white-space: nowrap; flex-shrink: 0; }
+    .done-empty { color: var(--muted); font-size: 13px; font-style: italic; }
   </style>
 </head>
 <body>
@@ -213,6 +257,16 @@
 <div class="queue-card">
   <div class="queue-title">Issue Queue</div>
   <div class="queue-rows" id="queue-rows">
+    <div class="loading-txt">Loading…</div>
+  </div>
+</div>
+
+<div class="done-card">
+  <div class="done-header">
+    <span class="done-title">Completed</span>
+    <span class="done-count" id="done-count">0</span>
+  </div>
+  <div class="done-list" id="done-list">
     <div class="loading-txt">Loading…</div>
   </div>
 </div>
@@ -374,6 +428,24 @@
       </div>`).join('') + '</div>';
   }
 
+  function renderDone(issues) {
+    document.getElementById('done-count').textContent = issues.length;
+    const listEl = document.getElementById('done-list');
+    if (!issues.length) {
+      listEl.innerHTML = '<span class="done-empty">No completed issues yet</span>';
+      return;
+    }
+    listEl.innerHTML = issues.map(i => `
+      <div class="done-row">
+        <span class="done-check">✓</span>
+        <div class="done-body">
+          <span class="done-issue-num"><a href="${i.html_url}" target="_blank">#${i.number}</a></span>
+          <span class="done-issue-title"> ${esc(i.title)}</span>
+        </div>
+        <span class="done-time">${ago(i.closed_at)}</span>
+      </div>`).join('');
+  }
+
   async function doRefresh() {
     clearTimeout(timer);
     clearInterval(cdTimer);
@@ -382,11 +454,11 @@
     document.getElementById('countdown').textContent = '';
 
     try {
-      // 3 calls total (vs 7) — fetch all runs per repo and filter client-side by workflow path.
-      const [issues, fnRuns, webRuns] = await Promise.all([
+      const [issues, fnRuns, webRuns, closedIssues] = await Promise.all([
         get(`${GH}/repos/${ORCH}/issues?state=open&per_page=100`),
         get(`${GH}/repos/${FN}/actions/runs?per_page=20`),
         get(`${GH}/repos/${WEB}/actions/runs?per_page=20`),
+        get(`${GH}/repos/${ORCH}/issues?state=closed&per_page=100&sort=updated&direction=desc`),
       ]);
 
       const allRuns = [...(fnRuns.workflow_runs||[]), ...(webRuns.workflow_runs||[])];
@@ -455,6 +527,8 @@
           <div class="chips">${chips}</div>
         </div>`;
       }).join('');
+
+      renderDone(closedIssues);
 
       document.getElementById('last-updated').textContent =
         'Last updated ' + new Date().toLocaleTimeString();
