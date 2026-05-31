@@ -105,7 +105,9 @@ echo "$cap_wait_issues" | jq -c '.[]' | while read -r issue; do
   has_code_review=$(echo “$issue” | jq -r '[.labels[].name] | any(. == “code-review”)')
   if [ “$has_code_review” = “true” ]; then
     updated_at=$(echo “$issue” | jq -r '.updatedAt')
-    age=$(( $(date +%s) - $(date -d “$updated_at” +%s) ))
+    now=$(date +%s)
+    updated_epoch=$(date -d “$updated_at” +%s 2>/dev/null || echo 0)
+    age=$(( now - updated_epoch ))
     if [ “$age” -lt 1200 ]; then
       echo “Issue #$number: code-review but only ${age}s old — skipping re-trigger (threshold 1200s)”
     else
