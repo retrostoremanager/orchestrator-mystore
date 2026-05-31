@@ -224,33 +224,102 @@
   const GH    = 'https://api.github.com';
   const REFRESH_SEC = 180;
 
-  function ghToken() { return localStorage.getItem('gh_token') || ''; }
+  // AES-256-GCM + PBKDF2 token encryption (Web Crypto API)
+  const _te = new TextEncoder(), _td = new TextDecoder();
+  const _b64e = buf => btoa(String.fromCharCode(...new Uint8Array(buf)));
+  const _b64d = s   => Uint8Array.from(atob(s), c => c.charCodeAt(0));
+
+  async function _deriveKey(passphrase, salt) {
+    const km = await crypto.subtle.importKey('raw', _te.encode(passphrase), 'PBKDF2', false, ['deriveKey']);
+    return crypto.subtle.deriveKey(
+      { name: 'PBKDF2', salt, iterations: 200000, hash: 'SHA-256' },
+      km, { name: 'AES-GCM', length: 256 }, false, ['encrypt', 'decrypt']
+    );
+  }
+
+  async function _storeEncrypted(token, passphrase) {
+    const salt = crypto.getRandomValues(new Uint8Array(16));
+    const iv   = crypto.getRandomValues(new Uint8Array(12));
+    const key  = await _deriveKey(passphrase, salt);
+    const ct   = await crypto.subtle.encrypt({ name: 'AES-GCM', iv }, key, _te.encode(token));
+    localStorage.setItem('gh_token_enc', JSON.stringify({ s: _b64e(salt), i: _b64e(iv), c: _b64e(ct) }));
+    localStorage.removeItem('gh_token');
+    sessionStorage.setItem('gh_token_cache', token);
+  }
+
+  async function _unlockStored(passphrase) {
+    const raw = localStorage.getItem('gh_token_enc');
+    if (!raw) throw new Error('No encrypted token');
+    const { s, i, c } = JSON.parse(raw);
+    const key   = await _deriveKey(passphrase, _b64d(s));
+    const plain = await crypto.subtle.decrypt({ name: 'AES-GCM', iv: _b64d(i) }, key, _b64d(c));
+    const token = _td.decode(plain);
+    sessionStorage.setItem('gh_token_cache', token);
+    return token;
+  }
+
+  function _tokenState() {
+    if (sessionStorage.getItem('gh_token_cache')) return 'active';
+    if (localStorage.getItem('gh_token_enc'))     return 'locked';
+    if (localStorage.getItem('gh_token'))         return 'plain';
+    return 'none';
+  }
+
+  function ghToken() {
+    return sessionStorage.getItem('gh_token_cache') || localStorage.getItem('gh_token') || '';
+  }
 
   function updateTokenBtn() {
     const btn = document.getElementById('token-btn');
-    if (ghToken()) {
-      btn.textContent = 'Token ✓';
-      btn.classList.add('has-token');
-    } else {
-      btn.textContent = 'Set Token';
-      btn.classList.remove('has-token');
-    }
+    const s = _tokenState();
+    btn.textContent = { active: 'Token ✓', locked: '🔒 Unlock', plain: '⚠ Encrypt', none: 'Set Token' }[s];
+    btn.classList.toggle('has-token', s === 'active');
   }
 
-  function setToken() {
-    const current = ghToken();
-    const val = prompt(
-      current ? 'Update GitHub token (leave blank to clear):' : 'Enter GitHub token (ghp_…):',
-      current
-    );
-    if (val === null) return;
-    if (val.trim()) {
-      localStorage.setItem('gh_token', val.trim());
-    } else {
-      localStorage.removeItem('gh_token');
+  async function setToken() {
+    const s = _tokenState();
+
+    if (s === 'locked') {
+      const pp = prompt('Passphrase to unlock:');
+      if (pp === null) return;
+      try { await _unlockStored(pp); updateTokenBtn(); doRefresh(); }
+      catch { alert('Wrong passphrase.'); }
+      return;
     }
+
+    const current = s === 'active'
+      ? sessionStorage.getItem('gh_token_cache')
+      : (localStorage.getItem('gh_token') || '');
+    const msg = s === 'active' ? 'Update GitHub token (blank to remove):' :
+                s === 'plain'  ? 'Re-enter token to encrypt it:'          :
+                                 'Enter GitHub token (ghp_…):';
+    const token = prompt(msg, current);
+    if (token === null) return;
+
+    if (!token.trim()) {
+      ['gh_token', 'gh_token_enc'].forEach(k => localStorage.removeItem(k));
+      sessionStorage.removeItem('gh_token_cache');
+      updateTokenBtn();
+      return;
+    }
+
+    const pp  = prompt('Set an encryption passphrase:');
+    if (!pp) return;
+    const pp2 = prompt('Confirm passphrase:');
+    if (pp !== pp2) { alert('Passphrases do not match.'); return; }
+
+    await _storeEncrypted(token.trim(), pp);
     updateTokenBtn();
     doRefresh();
+  }
+
+  async function initToken() {
+    updateTokenBtn();
+    if (_tokenState() !== 'locked') return;
+    const pp = prompt('Enter passphrase to unlock dashboard:');
+    if (!pp) return;
+    try { await _unlockStored(pp); updateTokenBtn(); doRefresh(); }
+    catch { /* wrong passphrase — user can click Unlock to retry */ }
   }
 
   let timer, cdTimer, cd = REFRESH_SEC;
@@ -409,8 +478,8 @@
     }, 1000);
   }
 
-  updateTokenBtn();
   doRefresh();
+  initToken();
 </script>
 </body>
 </html>
