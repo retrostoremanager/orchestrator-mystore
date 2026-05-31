@@ -409,7 +409,7 @@ if [ "$in_test_count" -gt 0 ]; then
 fi
 
 # Handle stale re-trigger (independent of dev slot)
-if [ -n "$retest_prs" ] && [ -z "$linked_bugs" ]; then
+if [ -n "$retest_prs" ]; then
   echo "Re-triggering stale tests: issues $retest_issues (PRs $retest_prs in $retest_repo)"
   GH_TOKEN="$DISPATCH_TOKEN" gh workflow run test-agent.yml \
     --repo "${owner}/fn-mystore" --ref main \
