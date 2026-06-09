@@ -27,7 +27,7 @@ jobs:
           github_token: ${{ secrets.GITHUB_TOKEN }}
           direct_prompt: ${{ github.event.inputs.prompt }}
           mode: agent
-          model: claude-sonnet-4-6
+          model: ${{ vars.BACKLOG_MODEL || 'claude-opus-4-7' }}
           allowed_tools: Bash
           timeout_minutes: 15
           max_turns: 20

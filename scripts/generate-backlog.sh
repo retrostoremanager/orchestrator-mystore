@@ -1,12 +1,23 @@
 #!/usr/bin/env bash
-# Dispatches a Claude agent to read PRD.md and create new GitHub issues
-# when the backlog runs low. Called from dispatch-tasks.sh.
+# =============================================================================
+# orchestrator-template / generate-backlog.sh
+#
+# Dispatches a Claude agent to read PRD.md and create new GitHub issues when
+# the backlog runs low. Called from dispatch-tasks.sh.
+#
+# Parameterized in v0.1: ORCH_SLUG (auto-derived from ORCHESTRATOR_REPO).
+#
+# NOT yet parameterized: the PROMPT body below contains project-specific content
+# (product description, repo labels, phase rules). Consumers must edit it for
+# their project. Prompt extraction into prompts/backlog.tmpl is deferred.
+# =============================================================================
 set -euo pipefail
 
 ORCHESTRATOR_REPO="${ORCHESTRATOR_REPO:?}"
 DISPATCH_TOKEN="${DISPATCH_TOKEN:?}"
 
 owner=$(echo "$ORCHESTRATOR_REPO" | cut -d'/' -f1)
+ORCH_SLUG=$(echo "$ORCHESTRATOR_REPO" | cut -d'/' -f2)
 
 PRD=$(cat "$(dirname "$0")/../PRD.md")
 
@@ -67,7 +78,7 @@ echo "Dispatching backlog generation agent..."
 jq -n --arg prompt "$PROMPT" \
   '{"ref":"main","inputs":{"prompt":$prompt}}' | \
 GH_TOKEN="$DISPATCH_TOKEN" gh api \
-  "repos/${owner}/orchestrator-mystore/actions/workflows/generate-backlog.yml/dispatches" \
+  "repos/${owner}/${ORCH_SLUG}/actions/workflows/generate-backlog.yml/dispatches" \
   --method POST --input -
 
 echo "Backlog generation dispatched."

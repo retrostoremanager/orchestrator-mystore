@@ -23,4 +23,5 @@ jobs:
           DISPATCH_TOKEN: ${{ secrets.GH_DISPATCH_TOKEN }}
           ORCHESTRATOR_REPO: ${{ github.repository }}
           TRIGGER_EVENT: ${{ github.event_name }}
+          TEST_HOST_REPO: ${{ vars.TEST_HOST_REPO }}
         run: bash scripts/dispatch-tasks.sh
