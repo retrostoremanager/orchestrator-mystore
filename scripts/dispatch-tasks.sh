@@ -1,16 +1,58 @@
 #!/usr/bin/env bash
+# =============================================================================
+# orchestrator-template / dispatch-tasks.sh (v0.2)
+#
+# Parameterized via env vars + config/orchestrator.env (sourced as bash):
+#   - ORCH_SLUG       auto-derived from ORCHESTRATOR_REPO (the {repo} part).
+#   - TEST_HOST_REPO  workflow env var (set as repo variable).
+#   - PROJECT_NAME    config: human-readable project name for prompt headings.
+#   - TARGET_BRANCH   config: branch dev agents target ("development" vs "main").
+#   - PR_LINK_PHRASE  config: "Closes" vs "Implements" for PR-issue linkage.
+#   - BUILD_<REPO>    config: per-target-repo build commands, looked up via
+#                     bash indirect expansion in lookup_build_cmd().
+#
+# Still hardcoded (deferred to v0.3 -- consumers edit the prompt heredocs):
+#   - Per-project addenda in the prompt (e.g. dbproj schema-fetch instruction,
+#     EF migration warning). These are heavily project-specific.
+# =============================================================================
 set -euo pipefail
 
 ORCHESTRATOR_REPO="${ORCHESTRATOR_REPO:?}"
-GH_TOKEN="${GH_TOKEN:?}"          # built-in token for this repo (issues)
+GH_TOKEN="${GH_TOKEN:?}"             # built-in token for this repo (issues)
 DISPATCH_TOKEN="${DISPATCH_TOKEN:?}" # PAT for cross-repo dispatch
+TEST_HOST_REPO="${TEST_HOST_REPO:?}" # consumer-set; repo hosting test-agent.yml
 TRIGGER_EVENT="${TRIGGER_EVENT:-workflow_dispatch}"
+
+# Source per-project config (required). See config/orchestrator.example.env.
+CONFIG_FILE="$(dirname "$0")/../config/orchestrator.env"
+if [ ! -f "$CONFIG_FILE" ]; then
+  echo "ERROR: Missing required config file: $CONFIG_FILE" >&2
+  echo "Copy config/orchestrator.example.env to config/orchestrator.env and edit." >&2
+  exit 1
+fi
+# shellcheck disable=SC1090
+source "$CONFIG_FILE"
+
+# Validate required config keys
+: "${PROJECT_NAME:?orchestrator.env: PROJECT_NAME is required}"
+: "${TARGET_BRANCH:?orchestrator.env: TARGET_BRANCH is required}"
+: "${PR_LINK_PHRASE:?orchestrator.env: PR_LINK_PHRASE is required}"
 
 # Issues stuck in-progress longer than this are considered failed/abandoned.
 # Must exceed the agent timeout (30m) + one orchestrator cycle (6h) + buffer.
 STALE_THRESHOLD_SECONDS=21600  # 6 hours
 
 owner=$(echo "$ORCHESTRATOR_REPO" | cut -d'/' -f1)
+ORCH_SLUG=$(echo "$ORCHESTRATOR_REPO" | cut -d'/' -f2)
+
+# Look up the per-target-repo build command from config. The convention is
+# BUILD_<UPPERCASE_REPO_WITH_UNDERSCORES> (e.g. fn-mystore -> BUILD_FN_MYSTORE).
+# Falls back to BUILD_DEFAULT if the specific repo has no entry.
+lookup_build_cmd() {
+  local repo="$1"
+  local key="BUILD_$(echo "$repo" | tr '[:lower:]-' '[:upper:]_')"
+  echo "${!key:-${BUILD_DEFAULT:-echo \"no build configured for $repo\"}}"
+}
 
 # â"€â"€ Helper: check if an open PR already references an issue â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€
 pr_exists_for_issue() {
@@ -20,7 +62,7 @@ pr_exists_for_issue() {
     --repo "${owner}/${target_repo}" \
     --state open \
     --json body \
-    --jq "[.[] | select(.body | contains(\"orchestrator-mystore#${issue_number}\"))] | length" \
+    --jq "[.[] | select(.body | contains(\"${ORCH_SLUG}#${issue_number}\"))] | length" \
     2>/dev/null || echo "0")
   [ "${count:-0}" -gt 0 ]
 }
@@ -85,11 +127,11 @@ echo "$cap_wait_issues" | jq -c '.[]' | while read -r issue; do
         --repo "${owner}/${target_repo}" \
         --state merged \
         --json number,body \
-        --jq "[.[] | select(.body | contains(\"orchestrator-mystore#${number}\"))] | .[0].number // empty" \
+        --jq "[.[] | select(.body | contains(\"${ORCH_SLUG}#${number}\"))] | .[0].number // empty" \
         2>/dev/null || true)
       if [ -n "$pr_number" ] && [ "$pr_number" != "null" ]; then
         GH_TOKEN="$DISPATCH_TOKEN" gh workflow run test-agent.yml \
-          --repo "${owner}/fn-mystore" --ref main \
+          --repo "${owner}/${TEST_HOST_REPO}" --ref main \
           -f pr_numbers="$pr_number" \
           -f target_repo="$target_repo" \
           -f orchestrator_issues="$number"
@@ -116,7 +158,7 @@ echo "$cap_wait_issues" | jq -c '.[]' | while read -r issue; do
         pr_data=$(GH_TOKEN="$DISPATCH_TOKEN" gh pr list \
           --repo "${owner}/${target_repo}" --state open \
           --json number,headRefName,body \
-          --jq "[.[] | select(.body | contains(\"orchestrator-mystore#${number}\"))] | .[0] // empty" \
+          --jq "[.[] | select(.body | contains(\"${ORCH_SLUG}#${number}\"))] | .[0] // empty" \
           2>/dev/null || echo "")
         if [ -n "$pr_data" ] && [ "$pr_data" != "null" ] && [ "$pr_data" != "" ]; then
           pr_number=$(echo "$pr_data" | jq -r '.number')
@@ -176,18 +218,43 @@ while IFS= read -r issue; do
     continue
   fi
 
-  # Calculate age in seconds.
-  # Use a shorter threshold when no agent runs are active -- means the issue is
-  # genuinely abandoned (cap hit, network error) rather than legitimately running.
-  # This avoids the 6h wait for issues that are clearly stuck with no active agent.
-  age=$(( $(date +%s) - $(date -d "$updated_at" +%s) ))
+  # Query active_runs once up-front -- used by merge-blocked detection and threshold logic.
   active_runs=$(GH_TOKEN="$DISPATCH_TOKEN" gh run list \
     --repo "${owner}/${target_repo}" \
     --workflow=claude-code.yml \
     --status in_progress \
     --json status --jq 'length' 2>/dev/null || echo "0")
+
+  # Detect PRs blocked on merge (review passed but conflicts unresolved) and route
+  # them to code-review so STEP 2b can dispatch a rebase agent. Only act when no
+  # agent is currently working on this repo.
   if [ "${active_runs:-0}" -eq 0 ]; then
-    effective_threshold=5400  # 90 min -- no agent running, so this is definitely abandoned
+    open_pr=$(GH_TOKEN="$DISPATCH_TOKEN" gh pr list \
+      --repo "${owner}/${target_repo}" --state open \
+      --json number,body \
+      --jq "[.[] | select(.body | contains(\"${ORCH_SLUG}#${number}\"))] | .[0]" \
+      2>/dev/null || echo "")
+    if [ -n "$open_pr" ] && [ "$open_pr" != "null" ]; then
+      open_pr_number=$(echo "$open_pr" | jq -r '.number // empty' 2>/dev/null || true)
+      last_comment=$(GH_TOKEN="$DISPATCH_TOKEN" gh pr view "$open_pr_number" \
+        --repo "${owner}/${target_repo}" --json comments \
+        --jq '.comments[-1].body[:60]' 2>/dev/null || echo "")
+      if echo "$last_comment" | grep -q "Merge blocked"; then
+        gh issue edit "$number" --repo "$ORCHESTRATOR_REPO" \
+          --remove-label in-progress --add-label code-review 2>/dev/null || true
+        echo "Issue #$number: PR #$open_pr_number has merge conflict -- moved to code-review for rebase"
+        continue
+      fi
+    fi
+  fi
+
+  # Calculate age in seconds.
+  # Use a shorter threshold when no agent runs are active -- means the issue is
+  # genuinely abandoned (cap hit, network error) rather than legitimately running.
+  # 15 min picks up abandoned issues quickly without false positives on legitimate work.
+  age=$(( $(date +%s) - $(date -d "$updated_at" +%s) ))
+  if [ "${active_runs:-0}" -eq 0 ]; then
+    effective_threshold=900  # 15 min -- no agent running, recover quickly
   else
     effective_threshold="$STALE_THRESHOLD_SECONDS"  # 6h -- agent running, give it time
   fi
@@ -230,8 +297,10 @@ while IFS= read -r issue; do
       --repo "$ORCHESTRATOR_REPO" \
       --add-label "retry-$next_retry"
 
+    build_cmd=$(lookup_build_cmd "$target_repo")
+
     read -r -d '' prompt << PROMPT || true
-RESUME incomplete task from RetroStoreManager Kanban.
+RESUME incomplete task from ${PROJECT_NAME} backlog.
 
 Issue #${number} in ${ORCHESTRATOR_REPO}: ${title}
 
@@ -242,13 +311,12 @@ Branch ${branch} already exists in this repo with partial work.
 
 Resume instructions:
 1. Check out the existing branch ${branch} -- do NOT create a new branch.
-2. Run: git log origin/development..HEAD --oneline   to see what was already committed.
-3. Run: dotnet build MyStore.sln   to check current build state.
+2. Run: git log origin/${TARGET_BRANCH}..HEAD --oneline   to see what was already committed.
+3. Run: ${build_cmd}   to check current build state.
 4. Before writing any Repository, Service, or SQL code that touches a database table: read the PostgreSQL schema file(s) from retrostoremanager/dbproj-mystore (development branch, PostgreSQL/ directory) for EVERY table you write INSERT or UPDATE statements for. Check ALL columns and NOT NULL constraints -- do not guess column names. Use: GH_TOKEN="\$GH_DISPATCH_TOKEN" gh api "repos/retrostoremanager/dbproj-mystore/contents/PostgreSQL/<file>?ref=development" --jq '.content' | base64 -d
 5. Review the acceptance criteria above and complete any remaining items.
-6. Run: dotnet test MyStore.Tests/MyStore.Tests.csproj
-7. If all tests pass, open a pull request targeting the development branch.
-8. PR title: ${title}. PR body must include: Closes ${ORCHESTRATOR_REPO}#${number}
+6. If all tests pass, open a pull request targeting the ${TARGET_BRANCH} branch.
+7. PR title: ${title}. PR body must include: ${PR_LINK_PHRASE} ${ORCHESTRATOR_REPO}#${number}
 PROMPT
 
     jq -n --arg prompt "$prompt" --arg branch "$branch" \
@@ -303,163 +371,242 @@ if [ "${open_count:-99}" -lt "$BACKLOG_THRESHOLD" ]; then
   fi
 fi
 
+# =============================================================================
+# STEP 2b -- Re-trigger code reviews that are stuck (no active review agent)
+# Covers the review-retry case: the dev agent fixed revisions but the
+# "Trigger code review" step in claude-code.yml skips PRs with review-retry-*.
+# =============================================================================
+code_review_issues=$(gh issue list \
+  --repo "$ORCHESTRATOR_REPO" \
+  --label code-review --state open \
+  --json number,labels \
+  --limit 20 \
+  2>/dev/null || echo "[]")
+
+echo "$code_review_issues" | jq -c '.[]' | while read -r cr_issue; do
+  cr_number=$(echo "$cr_issue" | jq -r '.number')
+  cr_repo=$(echo "$cr_issue" | jq -r '[.labels[].name | select(startswith("repo:"))] | first // empty' | sed 's/repo://')
+  [ -z "$cr_repo" ] && continue
+
+  active_review=$(GH_TOKEN="$DISPATCH_TOKEN" gh run list \
+    --repo "${owner}/${cr_repo}" \
+    --workflow=code-review.yml \
+    --status in_progress \
+    --json status --jq 'length' 2>/dev/null || echo "0")
+  [ "${active_review:-0}" -gt 0 ] && continue
+
+  pr_data=$(GH_TOKEN="$DISPATCH_TOKEN" gh pr list \
+    --repo "${owner}/${cr_repo}" --state open \
+    --json number,headRefName,body \
+    --jq "[.[] | select(.body | contains(\"${ORCH_SLUG}#${cr_number}\"))] | .[0] // empty" \
+    2>/dev/null || echo "")
+  [ -z "$pr_data" ] || [ "$pr_data" = "null" ] && continue
+
+  pr_number=$(echo "$pr_data" | jq -r '.number')
+  head_branch=$(echo "$pr_data" | jq -r '.headRefName')
+  GH_TOKEN="$DISPATCH_TOKEN" gh workflow run code-review.yml \
+    --repo "${owner}/${cr_repo}" --ref main \
+    -f pr_number="$pr_number" \
+    -f head_branch="$head_branch"
+  echo "Re-triggered code review for issue #$cr_number (${cr_repo} PR #$pr_number)"
+done
+
+
 # â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•
-# STEP 3 -- Dispatch next ready task
-# Dev slot (in-progress only) -- code-review runs in parallel on its own agent.
-# Test slot (in-test) is independent: a test running does NOT block dispatch.
+# STEP 3 -- Dispatch next ready task (per-repo dev slots, up to 3 per cycle)
+# Each repo (fn, web, dbproj, ...) has its own dev slot -- fn work no longer
+# blocks web work. Tests dispatch per-repo-per-cycle with a global cap of 3.
+# Code-review runs in parallel on its own agent and is not gated here.
 # â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•
 echo "Checking pipeline state..."
 
-# Count issues occupying the dev slot only (not in-test)
-dev_active_count=$(gh issue list \
+# Per-repo dev slots: collect which repos already have an in-progress issue.
+# Each repo (fn-mystore, web-mystore, dbproj-mystore, ...) can run one dev agent
+# concurrently. With the old single-global slot, fn work would block web work.
+occupied_repos=$(gh issue list \
   --repo "$ORCHESTRATOR_REPO" \
   --state open \
   --json labels \
-  --jq '[.[] | select(.labels | map(.name) | any(. == "in-progress"))] | length' \
-  2>/dev/null || echo "0")
+  --jq '[.[] | select(.labels | map(.name) | any(. == "in-progress"))
+        | .labels[] | select(.name | startswith("repo:")) | .name | ltrimstr("repo:")] | unique' \
+  2>/dev/null || echo "[]")
+dev_active_count=$(echo "$occupied_repos" | jq length 2>/dev/null || echo "0")
+echo "Occupied repos: $(echo "$occupied_repos" | jq -r 'join(", ")' 2>/dev/null || echo "none")"
 
-# Always check in-test issues: look for linked bug fixes and stale re-triggers
 in_test_issues=$(gh issue list \
   --repo "$ORCHESTRATOR_REPO" \
   --label in-test \
   --state open \
   --json number,labels,updatedAt \
-  --limit 20 \
+  --limit 60 \
   2>/dev/null || echo "[]")
 
 in_test_count=$(echo "$in_test_issues" | jq length)
 
 linked_bugs=""
-retest_prs=""
-retest_issues=""
-retest_repo=""
 
+# -- Auto-close story issues where all linked bugs are resolved -----------------
+# A "story" is any in-test issue that is NOT itself a bug. Once every linked bug
+# has been closed, the story is functionally done -- mark it done.
 if [ "$in_test_count" -gt 0 ]; then
+  echo "$in_test_issues" | jq -c '.[]' | while read -r in_test_entry; do
+    in_test_number=$(echo "$in_test_entry" | jq -r '.number')
+    is_bug=$(echo "$in_test_entry" | jq -r '[.labels[].name] | any(. == "bug")')
+    [ "$is_bug" = "true" ] && continue  # bugs are closed by the test agent directly
+
+    all_bugs=$(gh issue list \
+      --repo "$ORCHESTRATOR_REPO" --label bug --state all --limit 50 \
+      --json body \
+      --jq "[.[] | select(.body | contains(\"${ORCH_SLUG}#${in_test_number}\"))] | length" \
+      2>/dev/null || echo "0")
+    [ "${all_bugs:-0}" -eq 0 ] && continue  # never been tested yet -- let test agent run first
+
+    open_bugs=$(gh issue list \
+      --repo "$ORCHESTRATOR_REPO" --label bug --state open --limit 50 \
+      --json body \
+      --jq "[.[] | select(.body | contains(\"${ORCH_SLUG}#${in_test_number}\"))] | length" \
+      2>/dev/null || echo "1")
+
+    if [ "${open_bugs:-1}" -eq 0 ]; then
+      # Guard: do not mark a story done while its implementation PR is still open.
+      # Linked bugs being resolved does NOT mean the story's own work reached main --
+      # an open PR means the code is unmerged, so closing here would lose the work.
+      story_repo=$(echo "$in_test_entry" | jq -r '[.labels[].name | select(startswith("repo:"))] | first // empty' | sed 's/repo://')
+      if [ -n "$story_repo" ] && pr_exists_for_issue "$story_repo" "$in_test_number"; then
+        echo "Story #$in_test_number: all bugs resolved but an open PR exists in $story_repo -- NOT closing (work unmerged)"
+        continue
+      fi
+      gh issue edit "$in_test_number" --repo "$ORCHESTRATOR_REPO" \
+        --remove-label in-test --add-label done 2>/dev/null || true
+      echo "Story #$in_test_number: all $all_bugs bug(s) resolved -- marking done"
+    else
+      echo "Story #$in_test_number: $open_bugs/$all_bugs bug(s) still open"
+    fi
+  done
+fi
+
+# -- Dispatch up to one test per repo per cycle --------------------------------
+# Replaces the old comma-joined batched dispatch. Per-repo per-cycle lets fn
+# and web run in parallel while a global cap (3) prevents runaway concurrency.
+if [ "$in_test_count" -gt 0 ]; then
+  total_test_active=$(GH_TOKEN="$DISPATCH_TOKEN" gh run list \
+    --repo "${owner}/${TEST_HOST_REPO}" \
+    --workflow=test-agent.yml \
+    --status in_progress \
+    --json status --jq 'length' 2>/dev/null || echo "0")
+  test_dispatched_repos=""
+
   while IFS= read -r in_test_entry; do
     in_test_number=$(echo "$in_test_entry" | jq -r '.number')
-    echo "Checking issue #$in_test_number (in-test) for linked ready bugs..."
 
     linked=$(gh issue list \
       --repo "$ORCHESTRATOR_REPO" \
       --label ready --label bug --state open \
       --json number,title,body,labels \
       --limit 10 \
-      --jq "[.[] | select(.body | contains(\"orchestrator-mystore#${in_test_number}\"))]" \
+      --jq "[.[] | select(.body | contains(\"${ORCH_SLUG}#${in_test_number}\"))]" \
       2>/dev/null || echo "[]")
 
     cnt=$(echo "$linked" | jq length)
     if [ "$cnt" -gt 0 ]; then
-      echo "Found $cnt bug(s) linked to #$in_test_number -- will dispatch first"
-      linked_bugs="$linked"
-      break
-    fi
-
-    echo "No linked ready bugs for #$in_test_number"
-    # Skip re-trigger if any open bugs are linked to this issue (not just ready ones).
-    # The parent issue cannot pass E2E tests while its bugs are unresolved.
-    open_linked_bug_cnt=$(gh issue list \
-      --repo "$ORCHESTRATOR_REPO" \
-      --label bug --state open \
-      --json number,body \
-      --limit 20 \
-      --jq "[.[] | select(.body | contains(\"orchestrator-mystore#${in_test_number}\"))] | length" \
-      2>/dev/null || echo "0")
-    if [ "${open_linked_bug_cnt:-0}" -gt 0 ]; then
-      echo "Issue #$in_test_number has ${open_linked_bug_cnt} open linked bug(s) -- skipping re-trigger until bugs are resolved"
+      [ -z "$linked_bugs" ] && linked_bugs="$linked"
       continue
     fi
 
-    # Check if this in-test issue is stale and should have its test re-triggered.
-    # Use shorter threshold when no test agent is active (issue is abandoned, not running).
+    # Skip if this issue has already been tested (bugs were filed) -- the
+    # auto-close loop above handles its closure once those bugs resolve.
+    is_bug=$(echo "$in_test_entry" | jq -r '[.labels[].name] | any(. == "bug")')
+    if [ "$is_bug" = "false" ]; then
+      all_bugs=$(gh issue list \
+        --repo "$ORCHESTRATOR_REPO" --label bug --state all --limit 50 \
+        --json body \
+        --jq "[.[] | select(.body | contains(\"${ORCH_SLUG}#${in_test_number}\"))] | length" \
+        2>/dev/null || echo "0")
+      if [ "${all_bugs:-0}" -gt 0 ]; then
+        echo "Story #$in_test_number: previously tested ($all_bugs bug(s) filed) -- skipping re-test"
+        continue
+      fi
+    fi
+
+    # Skip if open linked bugs (that are NOT already in-test themselves) block
+    # this story -- the parent can't pass E2E while its bugs are unresolved.
+    open_linked_bug_cnt=$(gh issue list \
+      --repo "$ORCHESTRATOR_REPO" \
+      --label bug --state open \
+      --json number,body,labels \
+      --limit 20 \
+      --jq "[.[] | select(
+        (.body | contains(\"${ORCH_SLUG}#${in_test_number}\")) and
+        (.labels | map(.name) | any(. == \"in-test\") | not)
+      )] | length" \
+      2>/dev/null || echo "0")
+    if [ "${open_linked_bug_cnt:-0}" -gt 0 ]; then
+      continue
+    fi
+
+    target_repo_raw=$(echo "$in_test_entry" | jq -r '[.labels[].name | select(startswith("repo:"))] | first // empty' | sed 's/repo://')
+    [ -z "$target_repo_raw" ] && continue
+
+    # One test per target repo per cycle.
+    if echo "$test_dispatched_repos" | grep -qF "$target_repo_raw"; then
+      continue
+    fi
+
     updated_at=$(echo "$in_test_entry" | jq -r '.updatedAt')
     age=$(( $(date +%s) - $(date -d "$updated_at" +%s) ))
-    target_repo_raw=$(echo "$in_test_entry" | jq -r '[.labels[].name | select(startswith("repo:"))] | first // empty' | sed 's/repo://')
-    if [ -n "$target_repo_raw" ]; then
-      test_active=$(GH_TOKEN="$DISPATCH_TOKEN" gh run list \
-        --repo "${owner}/fn-mystore" \
-        --workflow=test-agent.yml \
-        --status in_progress \
-        --json status --jq 'length' 2>/dev/null || echo "0")
-    else
-      test_active=0
+
+    # Skip if at concurrent cap and issue is not stale.
+    if [ "${total_test_active:-0}" -ge 3 ] && [ "$age" -le "$STALE_THRESHOLD_SECONDS" ]; then
+      echo "Issue #$in_test_number: test capacity full ($total_test_active active) -- skipping"
+      continue
     fi
-    in_test_threshold=$([ "${test_active:-0}" -eq 0 ] && echo 5400 || echo "$STALE_THRESHOLD_SECONDS")
-    if [ "$age" -gt "$in_test_threshold" ]; then
-      target_repo_raw=$(echo "$in_test_entry" | jq -r '[.labels[].name | select(startswith("repo:"))] | first // empty' | sed 's/repo://')
-      if [ -n "$target_repo_raw" ]; then
-        pr=$(GH_TOKEN="$DISPATCH_TOKEN" gh pr list \
-          --repo "${owner}/${target_repo_raw}" --state merged \
-          --json number,body \
-          --jq "[.[] | select(.body | contains(\"orchestrator-mystore#${in_test_number}\"))] | .[0].number // empty" \
-          2>/dev/null || true)
-        if [ -n "$pr" ] && [ "$pr" != "null" ]; then
-          if [ -z "$retest_prs" ]; then
-            retest_prs="$pr"
-            retest_issues="$in_test_number"
-            retest_repo="$target_repo_raw"
-          else
-            retest_prs="${retest_prs},${pr}"
-            retest_issues="${retest_issues},${in_test_number}"
-          fi
-          echo "Issue #$in_test_number is stale ($((age/60))m) -- will re-trigger test (PR #$pr)"
-        fi
-      fi
+
+    pr=$(GH_TOKEN="$DISPATCH_TOKEN" gh pr list \
+      --repo "${owner}/${target_repo_raw}" --state merged \
+      --json number,body \
+      --jq "[.[] | select(.body | contains(\"${ORCH_SLUG}#${in_test_number}\"))] | .[0].number // empty" \
+      2>/dev/null || true)
+    if [ -n "$pr" ] && [ "$pr" != "null" ]; then
+      GH_TOKEN="$DISPATCH_TOKEN" gh workflow run test-agent.yml \
+        --repo "${owner}/${TEST_HOST_REPO}" --ref main \
+        -f pr_numbers="$pr" \
+        -f target_repo="$target_repo_raw" \
+        -f orchestrator_issues="$in_test_number"
+      echo "Dispatched test for issue #$in_test_number (PR #$pr in $target_repo_raw)"
+      test_dispatched_repos="$test_dispatched_repos $target_repo_raw"
+      total_test_active=$((total_test_active + 1))
     fi
   done < <(echo "$in_test_issues" | jq -c '.[]')
 fi
 
-# Handle stale re-trigger (independent of dev slot)
-if [ -n "$retest_prs" ]; then
-  echo "Re-triggering stale tests: issues $retest_issues (PRs $retest_prs in $retest_repo)"
-  GH_TOKEN="$DISPATCH_TOKEN" gh workflow run test-agent.yml \
-    --repo "${owner}/fn-mystore" --ref main \
-    -f pr_numbers="$retest_prs" \
-    -f target_repo="$retest_repo" \
-    -f orchestrator_issues="$retest_issues"
-  echo "Dispatched batched test re-trigger for issues $retest_issues"
-  # Don't exit -- dev slot may still be free for an independent task below
-fi
-
-# Dev slot gate: if occupied, only linked bug fixes can proceed
-if [ "${dev_active_count:-0}" -gt 0 ]; then
-  echo "Dev slot occupied ($dev_active_count in-progress) -- only linked bugs eligible"
-  if [ -n "$linked_bugs" ]; then
-    issues="$linked_bugs"
-  else
-    echo "No linked bugs -- waiting for dev slot to clear."
-    exit 0
-  fi
+# -- Build candidate pool for dev dispatch -------------------------------------
+# Linked bugs take priority. Otherwise: ready + agent-failed, sorted by priority.
+# Per-repo gating happens in the dispatch loop so an occupied fn slot doesn't
+# block a free web/dbproj dispatch in the same cycle.
+if [ -n "$linked_bugs" ]; then
+  issues="$linked_bugs"
 else
-  echo "Dev slot free -- picking next task..."
-  if [ -n "$linked_bugs" ]; then
-    # Priority: linked bug fixes first
-    issues="$linked_bugs"
-  else
-    # No linked bugs -- dispatch next independent ready task
-    ready_issues=$(gh issue list \
-      --repo "$ORCHESTRATOR_REPO" \
-      --label ready \
-      --state open \
-      --json number,title,body,labels \
-      --limit 10)
+  ready_issues=$(gh issue list \
+    --repo "$ORCHESTRATOR_REPO" \
+    --label ready --state open \
+    --json number,title,body,labels \
+    --limit 10)
 
-    failed_issues=$(gh issue list \
-      --repo "$ORCHESTRATOR_REPO" \
-      --label agent-failed \
-      --state open \
-      --json number,title,body,labels \
-      --limit 10)
+  failed_issues=$(gh issue list \
+    --repo "$ORCHESTRATOR_REPO" \
+    --label agent-failed --state open \
+    --json number,title,body,labels \
+    --limit 10)
 
-    issues=$(jq -s '
-      (.[0] + .[1]) | unique_by(.number) |
-      sort_by(
-        if (.labels | map(.name) | any(. == "priority:high")) then 0
-        elif (.labels | map(.name) | any(. == "agent-failed")) then 1
-        else 2
-        end
-      )
-    ' <(echo "$ready_issues") <(echo "$failed_issues"))
-  fi
+  issues=$(jq -s '
+    (.[0] + .[1]) | unique_by(.number) |
+    sort_by(
+      if (.labels | map(.name) | any(. == "priority:high")) then 0
+      elif (.labels | map(.name) | any(. == "agent-failed")) then 1
+      else 2
+      end
+    )
+  ' <(echo "$ready_issues") <(echo "$failed_issues"))
 fi
 
 count=$(echo "$issues" | jq length)
@@ -470,11 +617,14 @@ if [ "$count" -eq 0 ]; then
   exit 0
 fi
 
-# Dispatch exactly one at a time
+# Dispatch up to 3 per cycle (one per free repo slot). dispatched_repos tracks
+# within-cycle assignments so a batch of issues for the same repo doesn't all
+# dispatch at once and spawn conflicting concurrent agents.
 dispatched=0
+dispatched_repos=""
 
 echo "$issues" | jq -c '.[]' | while read -r issue; do
-  if [ "$dispatched" -ge 1 ]; then
+  if [ "$dispatched" -ge 3 ]; then
     break
   fi
 
@@ -492,19 +642,21 @@ echo "$issues" | jq -c '.[]' | while read -r issue; do
     continue
   fi
 
-  priority_tag=""
-  if [ "$is_priority" = "true" ]; then
-    priority_tag=" [PRIORITY]"
+  # Skip if this repo already has an in-progress issue (per-repo dev slot).
+  if echo "$occupied_repos" | jq -e --arg r "$target_repo" 'index($r) != null' >/dev/null 2>&1; then
+    echo "Issue #$number: $target_repo slot occupied -- skipping"
+    continue
   fi
-  echo "Dispatching issue #$number ('$title')${priority_tag} to $target_repo..."
 
-  if [ "$target_repo" = "fn-mystore" ]; then
-    build_cmd="dotnet build MyStore.sln && dotnet test MyStore.Tests/MyStore.Tests.csproj"
-  elif [ "$target_repo" = "dbproj-mystore" ]; then
-    build_cmd="echo 'SQL migration - no build step required'"
-  else
-    build_cmd="npm install && npm run build && npm test -- --run"
+  # Skip if we already dispatched to this repo in THIS run (occupied_repos is a
+  # start-of-run snapshot, so without this a batch of issues for the same repo
+  # would all dispatch at once, spawning concurrent agents that then conflict).
+  if echo " $dispatched_repos " | grep -q " $target_repo "; then
+    echo "Issue #$number: $target_repo already dispatched this cycle -- skipping"
+    continue
   fi
+
+  build_cmd=$(lookup_build_cmd "$target_repo")
 
   if [ "$is_bug" = "true" ]; then
     task_type="Bug fix"
@@ -514,8 +666,12 @@ echo "$issues" | jq -c '.[]' | while read -r issue; do
     task_note=""
   fi
 
+  priority_tag=""
+  [ "$is_priority" = "true" ] && priority_tag=" [PRIORITY]"
+  echo "Dispatching issue #$number ('$title')${priority_tag} to $target_repo..."
+
   read -r -d '' prompt << PROMPT || true
-${task_type} from RetroStoreManager Kanban.
+${task_type} from ${PROJECT_NAME} backlog.
 
 Issue #${number} in ${ORCHESTRATOR_REPO}: ${title}
 
@@ -526,16 +682,15 @@ ${task_note}
 Instructions:
 1. Read CLAUDE.md for coding standards and file map before making any changes.
 2. Before writing any Repository, Service, or SQL code that touches a database table: read the PostgreSQL schema file(s) from retrostoremanager/dbproj-mystore (development branch, PostgreSQL/ directory) for EVERY table you write INSERT or UPDATE statements for. Check ALL columns and NOT NULL constraints -- do not guess column names. Use: GH_TOKEN="\$GH_DISPATCH_TOKEN" gh api "repos/retrostoremanager/dbproj-mystore/contents/PostgreSQL/<file>?ref=development" --jq '.content' | base64 -d
-3. Create a feature branch feature/issue-${number} off the development branch.
+3. Create a feature branch feature/issue-${number} off the ${TARGET_BRANCH} branch.
 4. Implement the task following all project conventions.
 5. Run: ${build_cmd}
 6. If you modified an API endpoint, make one test curl call to https://mystore-func-dev.azurewebsites.net/api to verify it returns the expected HTTP status. Fix any failures before opening the PR.
-7. Open a pull request targeting the development branch.
-8. PR title: ${title}. PR body must include: Closes ${ORCHESTRATOR_REPO}#${number}
+7. Open a pull request targeting the ${TARGET_BRANCH} branch.
+8. PR title: ${title}. PR body must include: ${PR_LINK_PHRASE} ${ORCHESTRATOR_REPO}#${number}
 PROMPT
 
   if [ "$is_failed" = "true" ]; then
-    # Clear agent-failed and reset retry labels so stale recovery starts fresh
     gh issue edit "$number" \
       --repo "$ORCHESTRATOR_REPO" \
       --remove-label agent-failed \
@@ -550,12 +705,13 @@ PROMPT
       --add-label in-progress
   fi
 
-  jq -n --arg prompt "$prompt" \
-    '{"ref":"main","inputs":{"prompt":$prompt,"branch":"development"}}' | \
+  jq -n --arg prompt "$prompt" --arg branch "$TARGET_BRANCH" \
+    '{"ref":"main","inputs":{"prompt":$prompt,"branch":$branch}}' | \
   GH_TOKEN="$DISPATCH_TOKEN" gh api \
     "repos/${owner}/${target_repo}/actions/workflows/claude-code.yml/dispatches" \
     --method POST --input -
 
   echo "Dispatched issue #$number to $target_repo"
   dispatched=$((dispatched + 1))
+  dispatched_repos="$dispatched_repos $target_repo"
 done
