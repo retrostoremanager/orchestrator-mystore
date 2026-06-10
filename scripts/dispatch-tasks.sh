@@ -313,7 +313,7 @@ Resume instructions:
 1. Check out the existing branch ${branch} -- do NOT create a new branch.
 2. Run: git log origin/${TARGET_BRANCH}..HEAD --oneline   to see what was already committed.
 3. Run: ${build_cmd}   to check current build state.
-4. If the task involves SQL queries: read the relevant schema from retrostoremanager/dbproj-mystore (development branch, PostgreSQL/ directory) -- exact column names are there. Use: GH_TOKEN="\$GH_DISPATCH_TOKEN" gh api "repos/retrostoremanager/dbproj-mystore/contents/PostgreSQL/<file>?ref=development" --jq '.content' | base64 -d
+4. Before writing any Repository, Service, or SQL code that touches a database table: read the PostgreSQL schema file(s) from retrostoremanager/dbproj-mystore (development branch, PostgreSQL/ directory) for EVERY table you write INSERT or UPDATE statements for. Check ALL columns and NOT NULL constraints -- do not guess column names. Use: GH_TOKEN="\$GH_DISPATCH_TOKEN" gh api "repos/retrostoremanager/dbproj-mystore/contents/PostgreSQL/<file>?ref=development" --jq '.content' | base64 -d
 5. Review the acceptance criteria above and complete any remaining items.
 6. If all tests pass, open a pull request targeting the ${TARGET_BRANCH} branch.
 7. PR title: ${title}. PR body must include: ${PR_LINK_PHRASE} ${ORCHESTRATOR_REPO}#${number}
@@ -681,12 +681,13 @@ ${task_note}
 
 Instructions:
 1. Read CLAUDE.md for coding standards and file map before making any changes.
-2. If the task involves database queries or SQL: read the relevant schema file(s) from retrostoremanager/dbproj-mystore (development branch, PostgreSQL/ directory) before writing any SQL -- exact column names are there. Use: GH_TOKEN="\$GH_DISPATCH_TOKEN" gh api "repos/retrostoremanager/dbproj-mystore/contents/PostgreSQL/<file>?ref=development" --jq '.content' | base64 -d
+2. Before writing any Repository, Service, or SQL code that touches a database table: read the PostgreSQL schema file(s) from retrostoremanager/dbproj-mystore (development branch, PostgreSQL/ directory) for EVERY table you write INSERT or UPDATE statements for. Check ALL columns and NOT NULL constraints -- do not guess column names. Use: GH_TOKEN="\$GH_DISPATCH_TOKEN" gh api "repos/retrostoremanager/dbproj-mystore/contents/PostgreSQL/<file>?ref=development" --jq '.content' | base64 -d
 3. Create a feature branch feature/issue-${number} off the ${TARGET_BRANCH} branch.
 4. Implement the task following all project conventions.
 5. Run: ${build_cmd}
-6. Open a pull request targeting the ${TARGET_BRANCH} branch.
-7. PR title: ${title}. PR body must include: ${PR_LINK_PHRASE} ${ORCHESTRATOR_REPO}#${number}
+6. If you modified an API endpoint, make one test curl call to https://mystore-func-dev.azurewebsites.net/api to verify it returns the expected HTTP status. Fix any failures before opening the PR.
+7. Open a pull request targeting the ${TARGET_BRANCH} branch.
+8. PR title: ${title}. PR body must include: ${PR_LINK_PHRASE} ${ORCHESTRATOR_REPO}#${number}
 PROMPT
 
   if [ "$is_failed" = "true" ]; then
