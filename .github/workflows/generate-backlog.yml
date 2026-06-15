@@ -19,7 +19,9 @@ jobs:
         with:
           fetch-depth: 1
 
-      - uses: anthropics/claude-code-action@beta
+      - id: claude
+        continue-on-error: true
+        uses: anthropics/claude-code-action@beta
         env:
           GH_DISPATCH_TOKEN: ${{ secrets.GH_DISPATCH_TOKEN }}
         with:
@@ -31,3 +33,16 @@ jobs:
           allowed_tools: Bash
           timeout_minutes: 15
           max_turns: 20
+
+      # A spending-cap hit is transient (resets daily) and not actionable — don't
+      # fail the run or email on it. Any other agent failure still fails the run.
+      - name: Tolerate spending cap
+        if: steps.claude.outcome == 'failure'
+        run: |
+          OUT=$(cat "${{ steps.claude.outputs.execution_file }}" 2>/dev/null || echo "")
+          if echo "$OUT" | grep -q "Spending cap reached"; then
+            echo "Spending cap reached — skipping backlog generation this run; it will succeed after the cap resets. Not failing the run."
+            exit 0
+          fi
+          echo "Backlog agent failed for a non-cap reason — failing the run." >&2
+          exit 1
