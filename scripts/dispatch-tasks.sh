@@ -376,10 +376,15 @@ fi
 # Covers the review-retry case: the dev agent fixed revisions but the
 # "Trigger code review" step in claude-code.yml skips PRs with review-retry-*.
 # =============================================================================
+# Only re-trigger reviews that have been stuck a while. Within this window the dev agent's own
+# "Trigger code review" step (claude-code.yml -> trigger-review.sh) owns the dispatch; without
+# this guard STEP 2b raced that step and double-reviewed nearly every PR.
+REVIEW_STALE_THRESHOLD=600  # 10 min
+
 code_review_issues=$(gh issue list \
   --repo "$ORCHESTRATOR_REPO" \
   --label code-review --state open \
-  --json number,labels \
+  --json number,labels,updatedAt \
   --limit 20 \
   2>/dev/null || echo "[]")
 
@@ -388,12 +393,31 @@ echo "$code_review_issues" | jq -c '.[]' | while read -r cr_issue; do
   cr_repo=$(echo "$cr_issue" | jq -r '[.labels[].name | select(startswith("repo:"))] | first // empty' | sed 's/repo://')
   [ -z "$cr_repo" ] && continue
 
+  # Staleness guard: leave fresh code-review issues to the dev agent's own review trigger.
+  cr_updated=$(echo "$cr_issue" | jq -r '.updatedAt')
+  cr_age=$(( $(date +%s) - $(date -d "$cr_updated" +%s) ))
+  if [ "$cr_age" -lt "$REVIEW_STALE_THRESHOLD" ]; then
+    echo "Issue #$cr_number: in code-review ${cr_age}s (< ${REVIEW_STALE_THRESHOLD}s) -- leaving to claude-code.yml review trigger"
+    continue
+  fi
+
+  # The actual reviewer runs on claude-code.yml (via trigger-review.sh); code-review.yml is just a
+  # thin re-dispatcher. Check BOTH for an in-flight run so we don't pile on a review already going.
   active_review=$(GH_TOKEN="$DISPATCH_TOKEN" gh run list \
     --repo "${owner}/${cr_repo}" \
     --workflow=code-review.yml \
     --status in_progress \
     --json status --jq 'length' 2>/dev/null || echo "0")
   [ "${active_review:-0}" -gt 0 ] && continue
+  active_claude=$(GH_TOKEN="$DISPATCH_TOKEN" gh run list \
+    --repo "${owner}/${cr_repo}" \
+    --workflow=claude-code.yml \
+    --status in_progress \
+    --json status --jq 'length' 2>/dev/null || echo "0")
+  if [ "${active_claude:-0}" -gt 0 ]; then
+    echo "Issue #$cr_number: a claude-code.yml run (likely the reviewer) is active -- skipping"
+    continue
+  fi
 
   pr_data=$(GH_TOKEN="$DISPATCH_TOKEN" gh pr list \
     --repo "${owner}/${cr_repo}" --state open \
