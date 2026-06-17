@@ -54,6 +54,22 @@ lookup_build_cmd() {
   echo "${!key:-${BUILD_DEFAULT:-echo \"no build configured for $repo\"}}"
 }
 
+# Dispatch a workflow tolerantly. GitHub's workflow_dispatch API occasionally returns transient
+# errors (notably HTTP 500); under `set -e` a single failure would crash the whole orchestrator
+# run and email a failure. Retry a few times, then give up NON-fatally — the orchestrator runs
+# every few minutes, so a missed dispatch is picked up on the next cycle.
+dispatch_wf() {
+  local desc="$1"; shift
+  local n
+  for n in 1 2 3; do
+    if "$@"; then return 0; fi
+    echo "  WARN: dispatch ($desc) failed, attempt $n/3 — retrying in 5s"
+    sleep 5
+  done
+  echo "  WARN: dispatch ($desc) still failing after 3 attempts — skipping; next cycle will retry"
+  return 0
+}
+
 # â"€â"€ Helper: check if an open PR already references an issue â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€
 pr_exists_for_issue() {
   local target_repo="$1" issue_number="$2"
@@ -130,7 +146,7 @@ echo "$cap_wait_issues" | jq -c '.[]' | while read -r issue; do
         --jq "[.[] | select(.body | contains(\"${ORCH_SLUG}#${number}\"))] | .[0].number // empty" \
         2>/dev/null || true)
       if [ -n "$pr_number" ] && [ "$pr_number" != "null" ]; then
-        GH_TOKEN="$DISPATCH_TOKEN" gh workflow run test-agent.yml \
+        dispatch_wf "test-agent #$number" env GH_TOKEN="$DISPATCH_TOKEN" gh workflow run test-agent.yml \
           --repo "${owner}/${TEST_HOST_REPO}" --ref main \
           -f pr_numbers="$pr_number" \
           -f target_repo="$target_repo" \
@@ -163,7 +179,7 @@ echo "$cap_wait_issues" | jq -c '.[]' | while read -r issue; do
         if [ -n "$pr_data" ] && [ "$pr_data" != "null" ] && [ "$pr_data" != "" ]; then
           pr_number=$(echo "$pr_data" | jq -r '.number')
           head_branch=$(echo "$pr_data" | jq -r '.headRefName')
-          GH_TOKEN="$DISPATCH_TOKEN" gh workflow run code-review.yml \
+          dispatch_wf "code-review #$number" env GH_TOKEN="$DISPATCH_TOKEN" gh workflow run code-review.yml \
             --repo "${owner}/${target_repo}" --ref main \
             -f pr_number="$pr_number" \
             -f head_branch="$head_branch"
@@ -320,10 +336,10 @@ Resume instructions:
 PROMPT
 
     jq -n --arg prompt "$prompt" --arg branch "$branch" \
-      '{"ref":"main","inputs":{"prompt":$prompt,"branch":$branch}}' | \
-    GH_TOKEN="$DISPATCH_TOKEN" gh api \
+      '{"ref":"main","inputs":{"prompt":$prompt,"branch":$branch}}' > /tmp/orch-dispatch.json
+    dispatch_wf "resume #$number" env GH_TOKEN="$DISPATCH_TOKEN" gh api \
       "repos/${owner}/${target_repo}/actions/workflows/claude-code.yml/dispatches" \
-      --method POST --input -
+      --method POST --input /tmp/orch-dispatch.json
 
     echo "Dispatched resume for issue #$number to $target_repo (branch: $branch)"
     stale_dispatched=$((stale_dispatched + 1))
@@ -428,7 +444,7 @@ echo "$code_review_issues" | jq -c '.[]' | while read -r cr_issue; do
 
   pr_number=$(echo "$pr_data" | jq -r '.number')
   head_branch=$(echo "$pr_data" | jq -r '.headRefName')
-  GH_TOKEN="$DISPATCH_TOKEN" gh workflow run code-review.yml \
+  dispatch_wf "code-review #$cr_number" env GH_TOKEN="$DISPATCH_TOKEN" gh workflow run code-review.yml \
     --repo "${owner}/${cr_repo}" --ref main \
     -f pr_number="$pr_number" \
     -f head_branch="$head_branch"
@@ -591,7 +607,7 @@ if [ "$in_test_count" -gt 0 ]; then
       --jq "[.[] | select(.body | contains(\"${ORCH_SLUG}#${in_test_number}\"))] | .[0].number // empty" \
       2>/dev/null || true)
     if [ -n "$pr" ] && [ "$pr" != "null" ]; then
-      GH_TOKEN="$DISPATCH_TOKEN" gh workflow run test-agent.yml \
+      dispatch_wf "test #$in_test_number" env GH_TOKEN="$DISPATCH_TOKEN" gh workflow run test-agent.yml \
         --repo "${owner}/${TEST_HOST_REPO}" --ref main \
         -f pr_numbers="$pr" \
         -f target_repo="$target_repo_raw" \
@@ -730,10 +746,10 @@ PROMPT
   fi
 
   jq -n --arg prompt "$prompt" --arg branch "$TARGET_BRANCH" \
-    '{"ref":"main","inputs":{"prompt":$prompt,"branch":$branch}}' | \
-  GH_TOKEN="$DISPATCH_TOKEN" gh api \
+    '{"ref":"main","inputs":{"prompt":$prompt,"branch":$branch}}' > /tmp/orch-dispatch.json
+  dispatch_wf "dev #$number" env GH_TOKEN="$DISPATCH_TOKEN" gh api \
     "repos/${owner}/${target_repo}/actions/workflows/claude-code.yml/dispatches" \
-    --method POST --input -
+    --method POST --input /tmp/orch-dispatch.json
 
   echo "Dispatched issue #$number to $target_repo"
   dispatched=$((dispatched + 1))
